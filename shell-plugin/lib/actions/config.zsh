@@ -48,7 +48,7 @@ function _forge_action_model() {
     if _forge_select_model_pair_global "$input_text"; then
         model_id="${reply[1]}"
         provider_id="${reply[2]}"
-        _forge_exec config set model "$provider_id" "$model_id"
+        _forge_exec config set model "$provider_id" "$model_id" && _forge_clear_service_tier
     fi
 }
 
@@ -118,6 +118,7 @@ function _forge_action_session_model() {
     echo
 
     if _forge_select_model_pair "$input_text"; then
+        _forge_clear_service_tier
         _FORGE_SESSION_MODEL="${reply[1]}"
         _FORGE_SESSION_PROVIDER="${reply[2]}"
         _forge_log success "Session model set to \033[1m${_FORGE_SESSION_MODEL}\033[0m (provider: \033[1m${_FORGE_SESSION_PROVIDER}\033[0m)"
@@ -125,13 +126,12 @@ function _forge_action_session_model() {
 }
 
 # Action handler: Reload config by resetting all session-scoped overrides.
-# Clears _FORGE_SESSION_MODEL, _FORGE_SESSION_PROVIDER, and
-# _FORGE_SESSION_REASONING_EFFORT so that every subsequent forge invocation
-# falls back to the permanent global configuration.
+# Clears model, provider, reasoning effort, and pair-scoped service tier so
+# subsequent forge invocations fall back to the permanent global configuration.
 function _forge_action_config_reload() {
     echo
 
-    if [[ -z "$_FORGE_SESSION_MODEL" && -z "$_FORGE_SESSION_PROVIDER" && -z "$_FORGE_SESSION_REASONING_EFFORT" ]]; then
+    if [[ -z "$_FORGE_SESSION_MODEL" && -z "$_FORGE_SESSION_PROVIDER" && -z "$_FORGE_SESSION_REASONING_EFFORT" && -z "$_FORGE_SESSION_SERVICE_TIER" ]]; then
         _forge_log info "No session overrides active (already using global config)"
         return 0
     fi
@@ -139,6 +139,7 @@ function _forge_action_config_reload() {
     _FORGE_SESSION_MODEL=""
     _FORGE_SESSION_PROVIDER=""
     _FORGE_SESSION_REASONING_EFFORT=""
+    _forge_clear_service_tier
 
     _forge_log success "Session overrides cleared — using global config"
 }
@@ -172,6 +173,46 @@ function _forge_action_config_reasoning_effort() {
 
     if [[ -n "$selected" ]]; then
         _forge_exec config set reasoning-effort "$selected"
+    fi
+}
+
+# Select a typed tier for the effective provider/model pair. Empty is cancellation.
+function _forge_pick_service_tier() {
+    _forge_service_tier_pair || {
+        _forge_log error "No effective provider/model pair configured" >&2
+        return 1
+    }
+    local provider_id="${reply[1]}" model_id="${reply[2]}" selected
+    selected=$(_forge_select_with_query "$1" service-tier --provider "$provider_id" --model "$model_id") || return 1
+    case "$selected" in
+        default|flex|priority|ultrafast|automatic)
+            reply=("$provider_id" "$model_id" "$selected")
+            ;;
+        "") return 1 ;;
+        *)
+            _forge_log error "Invalid service tier: $selected" >&2
+            return 1
+            ;;
+    esac
+}
+
+# Session-only override; automatic omits the tier for the selected pair.
+function _forge_action_service_tier() {
+    echo
+    _forge_pick_service_tier "$1" || return 0
+    _FORGE_SERVICE_TIER_PROVIDER="${reply[1]}"
+    _FORGE_SERVICE_TIER_MODEL="${reply[2]}"
+    _FORGE_SESSION_SERVICE_TIER="${reply[3]}"
+    _forge_log success "Session service tier set to ${_FORGE_SESSION_SERVICE_TIER}"
+}
+
+# Persist (or clear with automatic) the selected pair's service tier.
+function _forge_action_config_service_tier() {
+    echo
+    _forge_pick_service_tier "$1" || return 0
+    local provider_id="${reply[1]}" model_id="${reply[2]}" selected="${reply[3]}"
+    if _forge_exec config set service-tier "$provider_id" "$model_id" "$selected"; then
+        _forge_clear_service_tier
     fi
 }
 

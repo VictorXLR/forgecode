@@ -6,11 +6,14 @@ use forge_app::domain::{
     Transformer,
 };
 use forge_app::dto::openai::{
-    COPILOT_AUTO_MODEL_ID, CopilotListModelResponse, ListModelResponse, ProviderPipeline,
-    ProviderPreferences, Request, Response, copilot_auto_model,
+    COPILOT_AUTO_MODEL_ID, CopilotListModelResponse, ListModelResponse, ProviderPipeline, Request,
+    Response, copilot_auto_model,
 };
 use forge_app::{EnvironmentInfra, HttpInfra};
-use forge_domain::{ChatRepository, Provider};
+use forge_domain::{
+    ChatRepository, Provider, ServiceTier, ServiceTierDiscovery, ServiceTierEndpoint,
+    ServiceTierPricing,
+};
 use forge_infra::sanitize_headers;
 use reqwest::header::AUTHORIZATION;
 use tokio_stream::StreamExt;
@@ -61,6 +64,7 @@ fn prepare_request(
     model: &ModelId,
     context: ChatContext,
     merge_system_messages: bool,
+    session: Option<&forge_config::ModelConfig>,
 ) -> Request {
     let request = Request::from(context).model(model.clone());
     let mut pipeline = ProviderPipeline::new(provider, merge_system_messages);
@@ -70,26 +74,46 @@ fn prepare_request(
         request = prepare_copilot_auto_request(request);
     }
 
-    if provider.id == ProviderId::OPEN_ROUTER && model.as_str() == "openai/gpt-6.1-sol" {
-        request = request.provider(
-            ProviderPreferences::default()
-                .only(vec!["openai/flex".to_string()])
-                .allow_fallbacks(false),
-        );
-    }
+    request.service_tier = session
+        .filter(|session| {
+            provider.id == ProviderId::OPEN_ROUTER
+                && session.provider_id == provider.id.as_ref().as_ref()
+                && session.model_id == model.as_str()
+        })
+        .and_then(|session| session.service_tier);
 
     request
+}
+
+#[derive(serde::Deserialize)]
+struct EndpointDiscoveryResponse {
+    data: EndpointDiscoveryData,
+}
+
+#[derive(serde::Deserialize)]
+struct EndpointDiscoveryData {
+    #[serde(default)]
+    endpoints: Vec<EndpointDiscoveryDto>,
+}
+
+#[derive(serde::Deserialize)]
+struct EndpointDiscoveryDto {
+    name: Option<String>,
+    provider_name: Option<String>,
+    tag: Option<String>,
+    pricing: Option<ServiceTierPricing>,
 }
 
 #[derive(Clone)]
 struct OpenAIProvider<H> {
     provider: Provider<Url>,
     http: Arc<H>,
+    session: Option<forge_config::ModelConfig>,
 }
 
 impl<H: HttpInfra> OpenAIProvider<H> {
     pub fn new(provider: Provider<Url>, http: Arc<H>) -> Self {
-        Self { provider, http }
+        Self { provider, http, session: None }
     }
 
     // OpenRouter optional headers ref: https://openrouter.ai/docs/api-reference/overview#headers
@@ -243,7 +267,13 @@ impl<H: HttpInfra> OpenAIProvider<H> {
         context: ChatContext,
         merge_system_messages: bool,
     ) -> ResultStream<ChatCompletionMessage, anyhow::Error> {
-        let request = prepare_request(&self.provider, model, context, merge_system_messages);
+        let request = prepare_request(
+            &self.provider,
+            model,
+            context,
+            merge_system_messages,
+            self.session.as_ref(),
+        );
 
         let url = self.provider.url.clone();
         let headers = create_headers(self.get_headers_with_request(&request));
@@ -337,6 +367,57 @@ impl<H: HttpInfra> OpenAIProvider<H> {
         }
     }
 
+    async fn discover_service_tiers(&self, model: ModelId) -> Result<ServiceTierDiscovery> {
+        if self.provider.id != ProviderId::OPEN_ROUTER {
+            return Ok(ServiceTierDiscovery::Unsupported);
+        }
+        let segments: Vec<_> = model.as_str().split('/').collect();
+        anyhow::ensure!(
+            segments.len() == 2 && segments.iter().all(|segment| !segment.is_empty()),
+            "OpenRouter model ID must contain exactly two nonempty author/slug segments"
+        );
+        let mut url = self.provider.url.clone();
+        url.set_query(None);
+        url.set_fragment(None);
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("Provider URL cannot contain path segments"))?
+            .clear()
+            .extend(["api", "v1", "models", segments[0], segments[1], "endpoints"]);
+        let response = self.fetch_models(url.as_str()).await?;
+        let response: EndpointDiscoveryResponse = serde_json::from_str(&response)
+            .with_context(|| format_http_context(None, "GET", &url))
+            .context("Failed to deserialize OpenRouter service tier endpoints")?;
+        let endpoints = response
+            .data
+            .endpoints
+            .into_iter()
+            .filter_map(|endpoint| {
+                let tag = endpoint.tag?;
+                // Tier tags append an exact slash-delimited suffix to a provider slug.
+                // All other endpoint variants (including regions) are standard capacity.
+                // https://openrouter.ai/docs/guides/features/service-tiers
+                if tag
+                    .split('/')
+                    .any(|segment| segment.is_empty() || segment.trim() != segment)
+                {
+                    return None;
+                }
+                let tier = match tag.rsplit_once('/').map(|(_, suffix)| suffix) {
+                    Some("flex") => ServiceTier::Flex,
+                    Some("fast" | "priority") => ServiceTier::Priority,
+                    Some("ultrafast") => ServiceTier::Ultrafast,
+                    _ => ServiceTier::Default,
+                };
+                let mut result = ServiceTierEndpoint::new(tier).tag(tag);
+                result.name = endpoint.name;
+                result.provider_name = endpoint.provider_name;
+                result.pricing = endpoint.pricing;
+                Some(result)
+            })
+            .collect();
+        Ok(ServiceTierDiscovery::Discovered(endpoints))
+    }
+
     async fn fetch_models(&self, url: &str) -> Result<String, anyhow::Error> {
         let headers = create_headers(self.get_headers());
         let url = join_url(url, "")?;
@@ -426,7 +507,8 @@ impl<F: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig> + 'stat
         let retry_config = config.retry.unwrap_or_default();
         let merge_system_messages = config.merge_system_messages;
         let provider_id = provider.id.clone();
-        let provider_client = OpenAIProvider::new(provider, self.infra.clone());
+        let mut provider_client = OpenAIProvider::new(provider, self.infra.clone());
+        provider_client.session = config.session;
         let stream = provider_client
             .chat(model_id, context, merge_system_messages)
             .await
@@ -435,6 +517,16 @@ impl<F: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig> + 'stat
         Ok(Box::pin(stream.map(move |item| {
             item.map_err(|e| enhance_error(into_retry(e, &retry_config), &provider_id))
         })))
+    }
+
+    async fn discover_service_tiers(
+        &self,
+        provider: Provider<Url>,
+        model: ModelId,
+    ) -> Result<ServiceTierDiscovery> {
+        OpenAIProvider::new(provider, self.infra.clone())
+            .discover_service_tiers(model)
+            .await
     }
 
     async fn models(&self, provider: Provider<Url>) -> anyhow::Result<Vec<Model>> {
@@ -474,11 +566,12 @@ mod tests {
             &ModelId::from(model),
             ChatContext::default(),
             false,
+            None,
         )
     }
 
     #[test]
-    fn test_openrouter_sol_routing() {
+    fn test_openrouter_sol_has_no_implicit_routing() {
         let fixture = routing_fixture(ProviderId::OPEN_ROUTER, "openai/gpt-6.1-sol");
         let actual = serde_json::to_value(fixture).unwrap();
         let expected = serde_json::json!({
@@ -486,8 +579,7 @@ mod tests {
             "messages": [],
             "stream": true,
             "stream_options": {"include_usage": true},
-            "parallel_tool_calls": true,
-            "provider": {"only": ["openai/flex"], "allow_fallbacks": false}
+            "parallel_tool_calls": true
         });
         assert_eq!(actual, expected);
     }
@@ -520,6 +612,109 @@ mod tests {
             if parallel_tool_calls {
                 expected["parallel_tool_calls"] = serde_json::json!(true);
             }
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_service_tier_full_request_scoping() {
+        use forge_domain::ServiceTier;
+
+        let tiers = [
+            ServiceTier::Default,
+            ServiceTier::Flex,
+            ServiceTier::Priority,
+            ServiceTier::Ultrafast,
+        ];
+        for tier in tiers {
+            let session =
+                forge_config::ModelConfig::new("open_router", "openai/gpt-6.1").service_tier(tier);
+            let fixtures = [
+                (ProviderId::OPEN_ROUTER, "openai/gpt-6.1", true, true),
+                (
+                    ProviderId::OPEN_ROUTER,
+                    "openai/gpt-6.1:extended",
+                    true,
+                    false,
+                ),
+                (ProviderId::OPEN_ROUTER, "compaction-model", true, false),
+                (ProviderId::OPEN_ROUTER, "subagent-model", true, false),
+                (ProviderId::OPENAI, "openai/gpt-6.1", false, false),
+                (ProviderId::FORGE, "openai/gpt-6.1", true, false),
+                (ProviderId::ZAI, "openai/gpt-6.1", true, false),
+                (ProviderId::GITHUB_COPILOT, "openai/gpt-6.1", false, false),
+                (
+                    ProviderId::from("custom".to_string()),
+                    "openai/gpt-6.1",
+                    false,
+                    false,
+                ),
+            ];
+            for (provider_id, model, parallel, matches) in fixtures {
+                let mut provider = openai("test-key");
+                provider.id = provider_id;
+                let fixture = prepare_request(
+                    &provider,
+                    &ModelId::from(model),
+                    ChatContext::default(),
+                    false,
+                    Some(&session),
+                );
+                let actual = serde_json::to_value(fixture).unwrap();
+                let mut expected = serde_json::json!({
+                    "model": model,
+                    "messages": [],
+                    "stream": true,
+                    "stream_options": {"include_usage": true}
+                });
+                if parallel {
+                    expected["parallel_tool_calls"] = serde_json::json!(true);
+                }
+                if matches {
+                    expected["service_tier"] = serde_json::json!(tier.to_string());
+                }
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_service_tier_missing_or_mismatched_session() {
+        use forge_domain::ServiceTier;
+
+        let fixtures = [
+            None,
+            Some(forge_config::ModelConfig::new(
+                "open_router",
+                "openai/gpt-6.1",
+            )),
+            Some(
+                forge_config::ModelConfig::new("openai", "openai/gpt-6.1")
+                    .service_tier(ServiceTier::Flex),
+            ),
+            Some(
+                forge_config::ModelConfig::new("open_router", "other-model")
+                    .service_tier(ServiceTier::Flex),
+            ),
+        ];
+        for session in fixtures {
+            let mut provider = openai("test-key");
+            provider.id = ProviderId::OPEN_ROUTER;
+            let fixture = prepare_request(
+                &provider,
+                &ModelId::from("openai/gpt-6.1"),
+                ChatContext::default(),
+                false,
+                session.as_ref(),
+            );
+            let actual = serde_json::to_value(fixture).unwrap();
+            let expected = serde_json::json!({
+                "model": "openai/gpt-6.1",
+                "messages": [],
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "parallel_tool_calls": true
+            });
             assert_eq!(actual, expected);
         }
     }
@@ -667,6 +862,210 @@ mod tests {
             provider,
             Arc::new(MockHttpClient::new()),
         ))
+    }
+
+    fn discovery_fixture(base_url: &str) -> anyhow::Result<OpenAIProvider<MockHttpClient>> {
+        let mut fixture = create_provider(base_url)?;
+        fixture.provider.id = ProviderId::OPEN_ROUTER;
+        fixture.provider.models = Some(forge_domain::ModelSource::Url(Url::parse(
+            "https://unrelated.invalid/models",
+        )?));
+        fixture.provider.custom_headers = Some(HashMap::from([(
+            "x-discovery-test".into(),
+            "custom-value".into(),
+        )]));
+        Ok(fixture)
+    }
+
+    #[tokio::test]
+    async fn test_service_tier_discovery_metadata_headers_and_url() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/api/v1/models/author/slug%3F%23%20%25/endpoints")
+            .match_header("authorization", "Bearer test-api-key")
+            .match_header("x-discovery-test", "custom-value")
+            .match_query(mockito::Matcher::Missing)
+            .with_body(serde_json::json!({"data": {"endpoints": [
+                {"tag": "openai", "name": "Standard", "provider_name": "OpenAI", "pricing": {"prompt": "0.001", "completion": "0.002", "request": "0", "image": "0.1"}},
+                {"tag": "openai/flex", "pricing": {"prompt": "0"}},
+                {"tag": "openai/fast"}, {"tag": "openai/ultrafast"},
+                {"tag": "google-vertex/priority"},
+                {"tag": "azure"}, {"tag": "azure/us"},
+                {"name": "priority", "provider_name": "ultrafast"}, {"tag": null}
+            ]}}).to_string())
+            .create_async().await;
+        let fixture =
+            discovery_fixture(&format!("{}/chat?secret=value#fragment", server.url())).unwrap();
+        let actual = fixture
+            .discover_service_tiers(ModelId::from("author/slug?# %"))
+            .await
+            .unwrap();
+        let expected = ServiceTierDiscovery::Discovered(vec![
+            ServiceTierEndpoint::new(ServiceTier::Default)
+                .tag("openai")
+                .name("Standard")
+                .provider_name("OpenAI")
+                .pricing(
+                    ServiceTierPricing::default()
+                        .prompt("0.001")
+                        .completion("0.002")
+                        .request("0")
+                        .image("0.1"),
+                ),
+            ServiceTierEndpoint::new(ServiceTier::Flex)
+                .tag("openai/flex")
+                .pricing(ServiceTierPricing::default().prompt("0")),
+            ServiceTierEndpoint::new(ServiceTier::Priority).tag("openai/fast"),
+            ServiceTierEndpoint::new(ServiceTier::Ultrafast).tag("openai/ultrafast"),
+            ServiceTierEndpoint::new(ServiceTier::Priority).tag("google-vertex/priority"),
+            ServiceTierEndpoint::new(ServiceTier::Default).tag("azure"),
+            ServiceTierEndpoint::new(ServiceTier::Default).tag("azure/us"),
+        ]);
+        assert_eq!(actual, expected);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_service_tier_discovery_does_not_infer_from_names_prices_or_partial_suffixes() {
+        let mut server = mockito::Server::new_async().await;
+        let standard_tags = [
+            "openai",
+            "azure/us",
+            "openai/Flex",
+            "openai/fast-preview",
+            "openai/notflex",
+            "openai/superfast",
+            "openai/priority-extra",
+            "openai/ultrafast-preview",
+            "openai/flex/us",
+            "openai-fast",
+            "flex",
+            "priority",
+            "ultrafast",
+            "fast",
+            "openai/standard",
+        ];
+        let pricing = ServiceTierPricing::default()
+            .prompt("0.000001")
+            .completion("999");
+        let mut endpoints: Vec<_> = standard_tags
+            .iter()
+            .map(|tag| {
+                serde_json::json!({
+                    "tag": tag, "name": "Flex Priority Fast Ultrafast",
+                    "provider_name": "Priority", "pricing": pricing,
+                })
+            })
+            .collect();
+        for tag in [
+            None,
+            Some(""),
+            Some("/flex"),
+            Some("openai/"),
+            Some("openai//fast"),
+            Some("openai/ flex"),
+        ] {
+            endpoints.push(serde_json::json!({
+                "tag": tag, "name": "Flex", "provider_name": "Priority", "pricing": pricing,
+            }));
+        }
+        endpoints.push(serde_json::json!({"tag": "google-vertex/us/flex"}));
+        let mock = server
+            .mock("GET", "/api/v1/models/openai/gpt-5.4/endpoints")
+            .with_body(serde_json::json!({"data": {"endpoints": endpoints}}).to_string())
+            .create_async()
+            .await;
+        let fixture = discovery_fixture(&server.url()).unwrap();
+        let actual = fixture
+            .discover_service_tiers(ModelId::from("openai/gpt-5.4"))
+            .await
+            .unwrap();
+        let mut expected: Vec<_> = standard_tags
+            .into_iter()
+            .map(|tag| {
+                ServiceTierEndpoint::new(ServiceTier::Default)
+                    .tag(tag)
+                    .name("Flex Priority Fast Ultrafast")
+                    .provider_name("Priority")
+                    .pricing(pricing.clone())
+            })
+            .collect();
+        expected.push(ServiceTierEndpoint::new(ServiceTier::Flex).tag("google-vertex/us/flex"));
+        assert_eq!(actual, ServiceTierDiscovery::Discovered(expected));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_service_tier_discovery_empty_endpoints() {
+        for body in [r#"{"data":{}}"#, r#"{"data":{"endpoints":[]}}"#] {
+            let mut server = mockito::Server::new_async().await;
+            let mock = server
+                .mock("GET", "/api/v1/models/author/slug/endpoints")
+                .with_body(body)
+                .create_async()
+                .await;
+            let fixture = discovery_fixture(&server.url()).unwrap();
+            let actual = fixture
+                .discover_service_tiers(ModelId::from("author/slug"))
+                .await
+                .unwrap();
+            let expected = ServiceTierDiscovery::Discovered(vec![]);
+            assert_eq!(actual, expected);
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_tier_discovery_errors() {
+        for (status, body, message) in [
+            (401, "unauthorized", "unauthorized"),
+            (500, "server failure", "server failure"),
+            (200, "not json", "Failed to deserialize"),
+            (
+                200,
+                r#"{"data":{"endpoints":[{"tag":"openai/flex","pricing":{"prompt":5}}]}}"#,
+                "Failed to deserialize",
+            ),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let mock = server
+                .mock("GET", "/api/v1/models/author/slug/endpoints")
+                .with_status(status)
+                .with_body(body)
+                .create_async()
+                .await;
+            let fixture = discovery_fixture(&server.url()).unwrap();
+            let actual = fixture
+                .discover_service_tiers(ModelId::from("author/slug"))
+                .await
+                .unwrap_err();
+            assert!(format!("{actual:#}").contains(message));
+            assert!(format!("{actual:#}").contains("/api/v1/models/author/slug/endpoints"));
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_tier_discovery_unsupported_and_invalid_no_network() {
+        let mut fixture = create_provider("http://127.0.0.1:1").unwrap();
+        fixture.provider.credential = None;
+        let actual = fixture
+            .discover_service_tiers(ModelId::from("invalid"))
+            .await
+            .unwrap();
+        let expected = ServiceTierDiscovery::Unsupported;
+        assert_eq!(actual, expected);
+        fixture.provider.id = ProviderId::OPEN_ROUTER;
+        for model in ["", "slug", "/slug", "author/", "a/b/c"] {
+            let actual = fixture
+                .discover_service_tiers(ModelId::from(model))
+                .await
+                .unwrap_err();
+            assert!(actual.to_string().contains("exactly two nonempty"));
+        }
+        let actual = fixture
+            .discover_service_tiers(ModelId::from("author/slug"))
+            .await;
+        assert!(actual.is_err());
     }
 
     fn create_mock_models_response() -> serde_json::Value {

@@ -164,6 +164,22 @@ pub trait ProviderService: Send + Sync {
         provider: Provider<Url>,
     ) -> ResultStream<ChatCompletionMessage, anyhow::Error>;
     async fn models(&self, provider: Provider<Url>) -> anyhow::Result<Vec<Model>>;
+
+    /// Discovers service tier endpoints for a provider model.
+    ///
+    /// # Arguments
+    /// * `provider_id` - Provider to query.
+    /// * `model_id` - Model whose service tiers should be discovered.
+    ///
+    /// # Errors
+    /// Returns an error if provider resolution or discovery fails.
+    async fn discover_service_tiers(
+        &self,
+        _provider_id: ProviderId,
+        _model_id: ModelId,
+    ) -> anyhow::Result<forge_domain::ServiceTierDiscovery> {
+        Ok(forge_domain::ServiceTierDiscovery::Unsupported)
+    }
     async fn get_provider(&self, id: forge_domain::ProviderId) -> anyhow::Result<Provider<Url>>;
     async fn get_all_providers(&self) -> anyhow::Result<Vec<AnyProvider>>;
     async fn upsert_credential(
@@ -650,6 +666,16 @@ impl<I: Services> ProviderService for I {
 
     async fn models(&self, provider: Provider<Url>) -> anyhow::Result<Vec<Model>> {
         self.provider_service().models(provider).await
+    }
+
+    async fn discover_service_tiers(
+        &self,
+        provider_id: ProviderId,
+        model_id: ModelId,
+    ) -> anyhow::Result<forge_domain::ServiceTierDiscovery> {
+        self.provider_service()
+            .discover_service_tiers(provider_id, model_id)
+            .await
     }
 
     async fn get_provider(&self, id: forge_domain::ProviderId) -> anyhow::Result<Provider<Url>> {

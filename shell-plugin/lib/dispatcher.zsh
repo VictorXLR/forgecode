@@ -181,6 +181,12 @@ function forge-accept-line() {
         config-reload|cr|model-reset|mr)
             _forge_action_config_reload
         ;;
+        service-tier)
+            _forge_action_service_tier "$input_text"
+        ;;
+        config-service-tier)
+            _forge_action_config_service_tier "$input_text"
+        ;;
         reasoning-effort|re)
             _forge_action_reasoning_effort "$input_text"
         ;;

@@ -88,6 +88,14 @@ impl<
         self.app().get_all_provider_models().await
     }
 
+    async fn discover_service_tiers(
+        &self,
+        provider: ProviderId,
+        model: ModelId,
+    ) -> Result<ServiceTierDiscovery> {
+        self.app().discover_service_tiers(provider, model).await
+    }
+
     async fn get_agents(&self) -> Result<Vec<Agent>> {
         self.services.get_agents().await
     }

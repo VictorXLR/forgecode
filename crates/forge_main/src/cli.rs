@@ -5,10 +5,58 @@
 //! remains compatible. The plugin at `shell-plugin/forge.plugin.zsh` implements
 //! shell completion and command shortcuts that depend on the CLI structure.
 
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use forge_domain::{AgentId, ConversationId, Effort, ModelId, ProviderId};
+use forge_domain::{AgentId, ConversationId, Effort, ModelId, ProviderId, ServiceTier};
+
+/// A persisted service-tier choice, including removal of the configured tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceTierValue {
+    /// Clear the configured tier and let the provider choose automatically.
+    Automatic,
+    /// Persist an explicit provider scheduling tier.
+    Tier(ServiceTier),
+}
+
+impl ServiceTierValue {
+    /// Converts the choice to a configured tier; automatic clears it to `None`.
+    pub fn into_option(self) -> Option<ServiceTier> {
+        match self {
+            Self::Automatic => None,
+            Self::Tier(tier) => Some(tier),
+        }
+    }
+}
+
+impl FromStr for ServiceTierValue {
+    type Err = String;
+
+    /// Parses automatic or an explicit domain service-tier tag.
+    ///
+    /// # Errors
+    /// Returns an error for unknown service-tier tags.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "automatic" {
+            Ok(Self::Automatic)
+        } else {
+            value.parse().map(Self::Tier).map_err(|_| {
+                "expected automatic, default, flex, priority, or ultrafast".to_string()
+            })
+        }
+    }
+}
+
+impl fmt::Display for ServiceTierValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Automatic => f.write_str("automatic"),
+            Self::Tier(tier) => tier.fmt(f),
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(version = env!("CARGO_PKG_VERSION"))]
@@ -57,6 +105,11 @@ pub struct Cli {
     /// Agent ID to use for this session.
     #[arg(long, alias = "aid")]
     pub agent: Option<AgentId>,
+
+    /// Override the service tier for this session without persisting it.
+    /// Accepts default, flex, priority, or ultrafast; not automatic.
+    #[arg(long)]
+    pub service_tier: Option<ServiceTier>,
 
     /// Top-level subcommands.
     #[command(subcommand)]
@@ -214,6 +267,19 @@ pub enum SelectCommand {
     /// Prints the selected effort level (none, minimal, low, medium, high,
     /// xhigh, max) on stdout. Prints nothing if the user cancels.
     ReasoningEffort {
+        /// Initial query text pre-filled in the search box.
+        #[arg(long, short = 'q')]
+        query: Option<String>,
+    },
+
+    /// Select a service tier for a provider/model pair interactively.
+    ServiceTier {
+        /// Provider ID whose supported tiers are shown.
+        #[arg(long)]
+        provider: ProviderId,
+        /// Model ID whose supported tiers are shown.
+        #[arg(long)]
+        model: ModelId,
         /// Initial query text pre-filled in the search box.
         #[arg(long, short = 'q')]
         query: Option<String>,
@@ -665,6 +731,15 @@ pub struct ConfigGetArgs {
 /// Type-safe subcommands for `forge config set`.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ConfigSetField {
+    /// Persist the service tier for a provider/model pair in global config.
+    ServiceTier {
+        /// Provider ID for the configured pair.
+        provider: ProviderId,
+        /// Model ID for the configured pair.
+        model: ModelId,
+        /// Tier tag, or automatic to clear the configured tier.
+        value: ServiceTierValue,
+    },
     /// Set the active model and provider atomically.
     Model {
         /// Provider ID to set as default.
@@ -696,6 +771,13 @@ pub enum ConfigSetField {
 /// Type-safe subcommands for `forge config get`.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ConfigGetField {
+    /// Get the globally configured service tier for a provider/model pair.
+    ServiceTier {
+        /// Provider ID for the configured pair.
+        provider: ProviderId,
+        /// Model ID for the configured pair.
+        model: ModelId,
+    },
     /// Get the active model.
     Model,
     /// Get the active provider.
@@ -953,6 +1035,197 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn test_service_tier_tags() {
+        for (tag, tier) in [
+            ("default", ServiceTier::Default),
+            ("flex", ServiceTier::Flex),
+            ("priority", ServiceTier::Priority),
+            ("ultrafast", ServiceTier::Ultrafast),
+        ] {
+            let fixture = ["forge", "--service-tier", tag];
+            let actual = Cli::try_parse_from(fixture).unwrap().service_tier;
+            let expected = Some(tier);
+            assert_eq!(actual, expected);
+
+            let fixture = [
+                "forge",
+                "config",
+                "set",
+                "service-tier",
+                "open_router",
+                "test-model",
+                tag,
+            ];
+            let actual = match Cli::try_parse_from(fixture).unwrap().subcommands {
+                Some(TopLevelCommand::Config(ConfigCommandGroup {
+                    command:
+                        ConfigCommand::Set(ConfigSetArgs {
+                            field: ConfigSetField::ServiceTier { provider, model, value },
+                        }),
+                    ..
+                })) => Some((provider, model, value.into_option(), value.to_string())),
+                _ => None,
+            };
+            let expected = Some((
+                ProviderId::OPEN_ROUTER,
+                ModelId::new("test-model"),
+                Some(tier),
+                tag.to_string(),
+            ));
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_service_tier_automatic_clears_config() {
+        let fixture = [
+            "forge",
+            "config",
+            "set",
+            "service-tier",
+            "open_router",
+            "test-model",
+            "automatic",
+        ];
+        let actual = match Cli::try_parse_from(fixture).unwrap().subcommands {
+            Some(TopLevelCommand::Config(ConfigCommandGroup {
+                command:
+                    ConfigCommand::Set(ConfigSetArgs {
+                        field: ConfigSetField::ServiceTier { value, .. },
+                    }),
+                ..
+            })) => Some((value.into_option(), value.to_string())),
+            _ => None,
+        };
+        let expected = Some((None, "automatic".to_string()));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_service_tier_invalid_values() {
+        for tag in ["automatic", "invalid"] {
+            let fixture = ["forge", "--service-tier", tag];
+            let actual = Cli::try_parse_from(fixture).err().unwrap().kind();
+            let expected = clap::error::ErrorKind::ValueValidation;
+            assert_eq!(actual, expected);
+        }
+        let fixture = [
+            "forge",
+            "config",
+            "set",
+            "service-tier",
+            "open_router",
+            "test-model",
+            "invalid",
+        ];
+        let actual = Cli::try_parse_from(fixture).err().unwrap().kind();
+        let expected = clap::error::ErrorKind::ValueValidation;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_service_tier_get_pair() {
+        let fixture = [
+            "forge",
+            "config",
+            "get",
+            "service-tier",
+            "open_router",
+            "test-model",
+        ];
+        let actual = match Cli::try_parse_from(fixture).unwrap().subcommands {
+            Some(TopLevelCommand::Config(ConfigCommandGroup {
+                command:
+                    ConfigCommand::Get(ConfigGetArgs {
+                        field: ConfigGetField::ServiceTier { provider, model },
+                    }),
+                ..
+            })) => Some((provider, model)),
+            _ => None,
+        };
+        let expected = Some((ProviderId::OPEN_ROUTER, ModelId::new("test-model")));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_service_tier_requires_pair_and_value() {
+        let fixtures: &[&[&str]] = &[
+            &["forge", "config", "set", "service-tier"],
+            &["forge", "config", "set", "service-tier", "open_router"],
+            &[
+                "forge",
+                "config",
+                "set",
+                "service-tier",
+                "open_router",
+                "test-model",
+            ],
+            &["forge", "config", "get", "service-tier"],
+            &["forge", "config", "get", "service-tier", "open_router"],
+            &["forge", "select", "service-tier"],
+            &[
+                "forge",
+                "select",
+                "service-tier",
+                "--provider",
+                "open_router",
+            ],
+            &["forge", "select", "service-tier", "--model", "test-model"],
+        ];
+        for fixture in fixtures {
+            let actual = Cli::try_parse_from(*fixture).err().unwrap().kind();
+            let expected = clap::error::ErrorKind::MissingRequiredArgument;
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_select_service_tier_flags() {
+        for query_flag in ["--query", "-q"] {
+            let fixture = [
+                "forge",
+                "select",
+                "service-tier",
+                "--provider",
+                "open_router",
+                "--model",
+                "test-model",
+                query_flag,
+                "priority",
+            ];
+            let actual = match Cli::try_parse_from(fixture).unwrap().subcommands {
+                Some(TopLevelCommand::Select(SelectCommandGroup {
+                    command: SelectCommand::ServiceTier { provider, model, query },
+                })) => Some((provider, model, query)),
+                _ => None,
+            };
+            let expected = Some((
+                ProviderId::OPEN_ROUTER,
+                ModelId::new("test-model"),
+                Some("priority".to_string()),
+            ));
+            assert_eq!(actual, expected);
+        }
+        let fixture = [
+            "forge",
+            "select",
+            "service-tier",
+            "--provider",
+            "open_router",
+            "--model",
+            "test-model",
+        ];
+        let actual = match Cli::try_parse_from(fixture).unwrap().subcommands {
+            Some(TopLevelCommand::Select(SelectCommandGroup {
+                command: SelectCommand::ServiceTier { query, .. },
+            })) => query,
+            _ => Some("unexpected command".to_string()),
+        };
+        let expected = None;
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn test_data_command_group_conversion() {

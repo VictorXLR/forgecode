@@ -712,6 +712,17 @@
         "provider_id": {
           "description": "The provider to use for this operation.",
           "type": "string"
+        },
+        "service_tier": {
+          "description": "Optional provider service tier for this model.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ServiceTier"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -975,6 +986,31 @@
         "max_attempts",
         "status_codes",
         "suppress_errors"
+      ]
+    },
+    "ServiceTier": {
+      "description": "Provider service tier controlling request scheduling.",
+      "oneOf": [
+        {
+          "description": "Standard provider scheduling.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Flexible scheduling for requests that can tolerate delays.",
+          "type": "string",
+          "const": "flex"
+        },
+        {
+          "description": "Priority scheduling for latency-sensitive requests.",
+          "type": "string",
+          "const": "priority"
+        },
+        {
+          "description": "Fastest available provider scheduling.",
+          "type": "string",
+          "const": "ultrafast"
+        }
       ]
     },
     "TlsBackend": {

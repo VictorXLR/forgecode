@@ -76,6 +76,14 @@ impl<F: EnvironmentInfra<Config = forge_config::ForgeConfig> + HttpInfra + Sync>
         self.router.chat(model_id, context, provider).await
     }
 
+    async fn discover_service_tiers(
+        &self,
+        provider: Provider<Url>,
+        model_id: ModelId,
+    ) -> anyhow::Result<forge_domain::ServiceTierDiscovery> {
+        self.router.discover_service_tiers(provider, model_id).await
+    }
+
     async fn models(&self, provider: Provider<Url>) -> anyhow::Result<Vec<Model>> {
         use forge_app::KVStore;
 
@@ -176,6 +184,16 @@ impl<F: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig> + Sync>
                 provider.id
             )),
         }
+    }
+
+    async fn discover_service_tiers(
+        &self,
+        provider: Provider<Url>,
+        model_id: ModelId,
+    ) -> anyhow::Result<forge_domain::ServiceTierDiscovery> {
+        self.openai_repo
+            .discover_service_tiers(provider, model_id)
+            .await
     }
 
     async fn models(&self, provider: Provider<Url>) -> anyhow::Result<Vec<Model>> {

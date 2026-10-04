@@ -14,6 +14,7 @@ function _forge_action_session_provider() {
     selected=$(_forge_select_with_query "$input_text" provider)
 
     if [[ -n "$selected" ]]; then
+        _forge_clear_service_tier
         _FORGE_SESSION_PROVIDER="$selected"
         _forge_log success "Session provider set to \033[1m${selected}\033[0m"
     fi

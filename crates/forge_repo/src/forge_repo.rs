@@ -169,6 +169,16 @@ impl<
     async fn models(&self, provider: Provider<Url>) -> anyhow::Result<Vec<Model>> {
         self.chat_repository.models(provider).await
     }
+
+    async fn discover_service_tiers(
+        &self,
+        provider: Provider<Url>,
+        model_id: ModelId,
+    ) -> anyhow::Result<forge_domain::ServiceTierDiscovery> {
+        self.chat_repository
+            .discover_service_tiers(provider, model_id)
+            .await
+    }
 }
 
 #[async_trait::async_trait]

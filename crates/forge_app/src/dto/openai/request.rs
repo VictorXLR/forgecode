@@ -225,6 +225,9 @@ pub struct Request {
     pub prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelId>,
+    /// Native OpenRouter scheduling tier, scoped to the active provider/model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<forge_domain::ServiceTier>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -369,6 +372,7 @@ impl From<Context> for Request {
                     .collect::<Vec<_>>();
                 if tools.is_empty() { None } else { Some(tools) }
             },
+            service_tier: None,
             model: None,
             prompt: Default::default(),
             response_format: context.response_format.map(|rf| match rf {

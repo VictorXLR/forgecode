@@ -102,6 +102,116 @@ fn format_mcp_headers(server: &forge_domain::McpServerConfig) -> Option<String> 
     }
 }
 
+fn apply_service_tier_override(
+    config: &mut ForgeConfig,
+    provider: &str,
+    model: &str,
+    tier: forge_domain::ServiceTier,
+) {
+    if let Some(session) = config
+        .session
+        .as_mut()
+        .filter(|session| session.provider_id == provider && session.model_id == model)
+    {
+        session.service_tier = Some(tier);
+    }
+}
+
+fn configured_service_tier(
+    session: Option<forge_domain::ModelConfig>,
+    provider: &ProviderId,
+    model: &ModelId,
+) -> Result<Option<forge_domain::ServiceTier>> {
+    session
+        .filter(|config| &config.provider == provider && &config.model == model)
+        .map(|config| config.service_tier)
+        .with_context(|| {
+            format!(
+                "No configured session provider/model pair matches {}/{model}",
+                provider.as_ref()
+            )
+        })
+}
+
+fn sync_service_tier(
+    config: &mut ForgeConfig,
+    tier_override: &mut Option<(String, String, forge_domain::ServiceTier)>,
+    cli_tier: &mut Option<forge_domain::ServiceTier>,
+    provider: &ProviderId,
+    model: &ModelId,
+    tier: Option<forge_domain::ServiceTier>,
+) {
+    if tier_override
+        .as_ref()
+        .is_some_and(|(p, m, _)| p == provider.as_ref().as_ref() && m == model.as_str())
+    {
+        *tier_override = None;
+        *cli_tier = None;
+    }
+    if let Some(session) = config.session.as_mut().filter(|session| {
+        session.provider_id == provider.as_ref().as_ref() && session.model_id == model.as_str()
+    }) {
+        session.service_tier = tier;
+    }
+}
+
+fn service_tier_rows(discovery: &forge_domain::ServiceTierDiscovery) -> Vec<SelectRow> {
+    use forge_domain::{ServiceTier, ServiceTierDiscovery};
+
+    let mut rows = vec![SelectRow::new(
+        "automatic",
+        "automatic — provider chooses; no explicit tier",
+    )];
+    for tier in [
+        ServiceTier::Default,
+        ServiceTier::Flex,
+        ServiceTier::Priority,
+        ServiceTier::Ultrafast,
+    ] {
+        let details = match discovery {
+            ServiceTierDiscovery::Unsupported => {
+                "discovery unsupported; support and pricing unknown".to_string()
+            }
+            ServiceTierDiscovery::Discovered(endpoints) => {
+                let offers = endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.tier == tier)
+                    .map(|endpoint| {
+                        let mut details = vec!["supported".to_string()];
+                        details.extend(endpoint.provider_name.clone());
+                        details.extend(endpoint.name.clone());
+                        if let Some(pricing) = &endpoint.pricing {
+                            for (label, price) in [
+                                ("prompt", &pricing.prompt),
+                                ("completion", &pricing.completion),
+                                ("request", &pricing.request),
+                                ("image", &pricing.image),
+                            ] {
+                                if let Some(price) = price {
+                                    details.push(format!("{label}={price}"));
+                                }
+                            }
+                        } else {
+                            details.push("pricing unavailable".to_string());
+                        }
+                        details.join(", ")
+                    })
+                    .collect::<Vec<_>>();
+                if offers.is_empty() {
+                    "unsupported — not advertised by discovery".to_string()
+                } else {
+                    offers.join("; ")
+                }
+            }
+        };
+        rows.push(SelectRow::new(
+            tier.to_string(),
+            format!("{tier} — {details}"),
+        ));
+    }
+    rows
+}
+
 pub struct UI<A: ConsoleWriter, F: Fn(ForgeConfig) -> A> {
     markdown: MarkdownFormat,
     state: UIState,
@@ -112,6 +222,7 @@ pub struct UI<A: ConsoleWriter, F: Fn(ForgeConfig) -> A> {
     cli: Cli,
     spinner: SharedSpinner<A>,
     config: ForgeConfig,
+    service_tier_override: Option<(String, String, forge_domain::ServiceTier)>,
     #[allow(dead_code)] // The guard is kept alive by being held in the struct
     _guard: forge_tracker::Guard,
 }
@@ -205,7 +316,10 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
 
     // Handle creating a new conversation
     async fn on_new(&mut self) -> Result<()> {
-        let config = forge_config::ForgeConfig::read().unwrap_or_default();
+        let mut config = forge_config::ForgeConfig::read().unwrap_or_default();
+        if let Some((provider, model, tier)) = &self.service_tier_override {
+            apply_service_tier_override(&mut config, provider, model, *tier);
+        }
         self.config = config.clone();
         self.api = Arc::new((self.new_api)(config));
         self.init_state(false).await?;
@@ -271,7 +385,21 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
     /// * `f` - Factory closure invoked once at startup and again on each `/new`
     ///   command; receives the latest [`ForgeConfig`] so that config changes
     ///   from `forge config set` are reflected in new conversations
-    pub fn init(cli: Cli, config: ForgeConfig, f: F) -> Result<Self> {
+    pub fn init(cli: Cli, mut config: ForgeConfig, f: F) -> Result<Self> {
+        if let Some(tier) = cli.service_tier {
+            let session = config
+                .session
+                .as_ref()
+                .context("--service-tier requires an active session provider and model")?;
+            let (provider, model) = (session.provider_id.clone(), session.model_id.clone());
+            apply_service_tier_override(&mut config, &provider, &model, tier);
+        }
+        let service_tier_override = cli.service_tier.and_then(|tier| {
+            config
+                .session
+                .as_ref()
+                .map(|session| (session.provider_id.clone(), session.model_id.clone(), tier))
+        });
         // Parse CLI arguments first to get flags
         let api = Arc::new(f(config.clone()));
         let env = api.environment();
@@ -291,6 +419,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             spinner,
             markdown: MarkdownFormat::new(),
             config,
+            service_tier_override,
             _guard: forge_tracker::init_tracing(env.log_path(), TRACKER.clone())?,
         })
     }
@@ -356,6 +485,19 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
     }
 
     async fn run_inner(&mut self) -> Result<()> {
+        if let Some(tier) = self.cli.service_tier {
+            let session = self
+                .config
+                .session
+                .clone()
+                .context("Missing session model")?;
+            self.validate_service_tier(
+                &ProviderId::from(session.provider_id.clone()),
+                &ModelId::from(session.model_id.clone()),
+                Some(tier),
+            )
+            .await?;
+        }
         if let Some(cmd) = self.cli.subcommands.clone() {
             return self.handle_subcommands(cmd).await;
         }
@@ -865,6 +1007,14 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                             self.select_provider(query.clone(), *configured).await?
                         {
                             self.writeln(provider.id().as_ref())?;
+                        }
+                    }
+                    SelectCommand::ServiceTier { provider, model, query } => {
+                        if let Some(value) = self
+                            .select_service_tier(provider, model, query.clone())
+                            .await?
+                        {
+                            self.writeln(value)?;
                         }
                     }
                     SelectCommand::ReasoningEffort { query } => {
@@ -2328,6 +2478,24 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                     "No session overrides in REPL mode. Use :model to switch the active model.",
                 ))?;
             }
+            AppCommand::ServiceTier | AppCommand::ConfigServiceTier => {
+                let session = self
+                    .api
+                    .get_session_config()
+                    .await
+                    .context("No active session model")?;
+                if let Some(value) = self
+                    .select_service_tier(&session.provider, &session.model, None)
+                    .await?
+                {
+                    let tier = value
+                        .parse::<crate::cli::ServiceTierValue>()
+                        .map_err(anyhow::Error::msg)?
+                        .into_option();
+                    self.set_service_tier(session.provider, session.model, tier)
+                        .await?;
+                }
+            }
             AppCommand::ReasoningEffort => {
                 self.on_reasoning_effort_selection(false).await?;
             }
@@ -2467,6 +2635,110 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         }
 
         Ok(())
+    }
+
+    async fn validate_service_tier(
+        &mut self,
+        provider: &ProviderId,
+        model: &ModelId,
+        tier: Option<forge_domain::ServiceTier>,
+    ) -> Result<()> {
+        if tier == Some(forge_domain::ServiceTier::Flex) {
+            let discovery = self
+                .api
+                .discover_service_tiers(provider.clone(), model.clone())
+                .await?;
+            anyhow::ensure!(
+                matches!(discovery, forge_domain::ServiceTierDiscovery::Discovered(ref endpoints)
+                    if endpoints.iter().any(|endpoint| endpoint.tier == forge_domain::ServiceTier::Flex)),
+                "Flex is not confirmed by discovery for {provider}/{model}; choose automatic or default instead"
+            );
+            self.writeln_to_stderr(
+                "Warning: Flex availability and pricing are not guaranteed; the provider may fall back to standard service and pricing.".to_string(),
+            )?;
+        }
+        Ok(())
+    }
+
+    async fn configured_service_tier(
+        &self,
+        provider: &ProviderId,
+        model: &ModelId,
+    ) -> Result<Option<forge_domain::ServiceTier>> {
+        configured_service_tier(self.api.get_session_config().await, provider, model)
+    }
+
+    async fn set_service_tier(
+        &mut self,
+        provider: ProviderId,
+        model: ModelId,
+        service_tier: Option<forge_domain::ServiceTier>,
+    ) -> Result<()> {
+        self.configured_service_tier(&provider, &model).await?;
+        self.validate_service_tier(&provider, &model, service_tier)
+            .await?;
+        self.api
+            .update_config(vec![ConfigOperation::SetServiceTier {
+                provider: provider.clone(),
+                model: model.clone(),
+                service_tier,
+            }])
+            .await?;
+        sync_service_tier(
+            &mut self.config,
+            &mut self.service_tier_override,
+            &mut self.cli.service_tier,
+            &provider,
+            &model,
+            service_tier,
+        );
+        self.writeln_title(
+            TitleFormat::action(
+                service_tier
+                    .map(|tier| tier.to_string())
+                    .unwrap_or_else(|| "automatic".to_string()),
+            )
+            .sub_title(format!("persisted in global config for {provider}/{model}")),
+        )?;
+        Ok(())
+    }
+
+    async fn select_service_tier(
+        &mut self,
+        provider: &ProviderId,
+        model: &ModelId,
+        query: Option<String>,
+    ) -> Result<Option<String>> {
+        let discovery = self
+            .api
+            .discover_service_tiers(provider.clone(), model.clone())
+            .await?;
+        let rows = service_tier_rows(&discovery);
+        let current = self
+            .api
+            .get_session_config()
+            .await
+            .filter(|config| &config.provider == provider && &config.model == model)
+            .and_then(|config| config.service_tier)
+            .map(|tier| tier.to_string())
+            .unwrap_or_else(|| "automatic".to_string());
+        let selected = self
+            .select_raw_row(
+                &format!("Service Tier for {provider}/{model}"),
+                query,
+                rows,
+                0,
+                Some(current),
+            )?
+            .map(|row| row.raw);
+        if let Some(value) = selected.as_ref() {
+            let tier = value
+                .parse::<crate::cli::ServiceTierValue>()
+                .map_err(anyhow::Error::msg)?
+                .into_option();
+            self.validate_service_tier(provider, model, tier).await?;
+        }
+        Ok(selected)
     }
 
     async fn select_reasoning_effort(
@@ -4534,6 +4806,10 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                     format!("is now the suggest model for provider '{provider}'"),
                 ))?;
             }
+            ConfigSetField::ServiceTier { provider, model, value } => {
+                self.set_service_tier(provider, model, value.into_option())
+                    .await?;
+            }
             ConfigSetField::ReasoningEffort { effort } => {
                 self.api
                     .update_config(vec![ConfigOperation::SetReasoningEffort(effort.clone())])
@@ -4594,6 +4870,13 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                     }
                     None => self.writeln("Suggest: Not set")?,
                 }
+            }
+            ConfigGetField::ServiceTier { provider, model } => {
+                let tier = self.configured_service_tier(&provider, &model).await?;
+                self.writeln(
+                    tier.map(|tier| tier.to_string())
+                        .unwrap_or_else(|| "automatic".to_string()),
+                )?;
             }
             ConfigGetField::ReasoningEffort => {
                 let effort = self.api.get_reasoning_effort().await?;
@@ -5212,6 +5495,311 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_configured_service_tier_matches_session() {
+        use forge_domain::{ModelConfig, ServiceTier};
+        use pretty_assertions::assert_eq;
+
+        for tier in [None, Some(ServiceTier::Priority)] {
+            let mut fixture = ModelConfig::new("openrouter".to_string(), "model-a");
+            fixture.service_tier = tier;
+            let actual = super::configured_service_tier(
+                Some(fixture),
+                &"openrouter".to_string().into(),
+                &"model-a".into(),
+            )
+            .unwrap();
+            let expected = tier;
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_configured_service_tier_rejects_commit_and_suggest_only_pairs() {
+        use forge_config::{ForgeConfig, ModelConfig};
+        use forge_domain::ServiceTier;
+        use pretty_assertions::assert_eq;
+
+        for session in [None, Some(ModelConfig::new("openrouter", "session-model"))] {
+            let mut fixture = ForgeConfig::default()
+                .commit(
+                    ModelConfig::new("openrouter", "commit-model")
+                        .service_tier(ServiceTier::Priority),
+                )
+                .suggest(
+                    ModelConfig::new("openrouter", "suggest-model").service_tier(ServiceTier::Flex),
+                );
+            fixture.session = session;
+            for model in ["commit-model", "suggest-model"] {
+                let session = fixture.session.as_ref().map(|config| {
+                    forge_domain::ModelConfig::new(
+                        config.provider_id.clone(),
+                        config.model_id.clone(),
+                    )
+                });
+                let actual = super::configured_service_tier(
+                    session,
+                    &"openrouter".to_string().into(),
+                    &model.into(),
+                )
+                .unwrap_err()
+                .to_string();
+                let expected =
+                    format!("No configured session provider/model pair matches openrouter/{model}");
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_configured_service_tier_rejects_nonexistent_pair() {
+        use forge_domain::ModelConfig;
+        use pretty_assertions::assert_eq;
+
+        for (provider, model) in [("other", "model-a"), ("openrouter", "other")] {
+            let fixture = Some(ModelConfig::new("openrouter".to_string(), "model-a"));
+            let actual = super::configured_service_tier(
+                fixture,
+                &provider.to_string().into(),
+                &model.into(),
+            )
+            .unwrap_err()
+            .to_string();
+            let expected =
+                format!("No configured session provider/model pair matches {provider}/{model}");
+            assert_eq!(actual, expected);
+        }
+        let actual = super::configured_service_tier(
+            None,
+            &"openrouter".to_string().into(),
+            &"model-a".into(),
+        )
+        .is_err();
+        assert!(actual);
+    }
+
+    #[test]
+    fn test_sync_service_tier_preserves_unrelated_pairs_and_overrides() {
+        use forge_config::{ForgeConfig, ModelConfig};
+        use forge_domain::ServiceTier;
+        use pretty_assertions::assert_eq;
+
+        let fixture = ForgeConfig::default()
+            .session(ModelConfig::new("openrouter", "model-a").service_tier(ServiceTier::Flex))
+            .commit(ModelConfig::new("other", "model-a"))
+            .suggest(ModelConfig::new("openrouter", "other"));
+        let fixture_override = Some((
+            "openrouter".to_string(),
+            "model-a".to_string(),
+            ServiceTier::Flex,
+        ));
+        for (provider, model) in [
+            ("other", "model-a"),
+            ("openrouter", "other"),
+            ("openrouter", "model-a"),
+        ] {
+            for tier in [None, Some(ServiceTier::Priority)] {
+                let mut actual = (
+                    fixture.clone(),
+                    fixture_override.clone(),
+                    Some(ServiceTier::Flex),
+                );
+                super::sync_service_tier(
+                    &mut actual.0,
+                    &mut actual.1,
+                    &mut actual.2,
+                    &provider.to_string().into(),
+                    &model.into(),
+                    tier,
+                );
+                let expected = if provider == "openrouter" && model == "model-a" {
+                    let mut config = fixture.clone();
+                    config.session.as_mut().unwrap().service_tier = tier;
+                    (config, None, None)
+                } else {
+                    (
+                        fixture.clone(),
+                        fixture_override.clone(),
+                        Some(ServiceTier::Flex),
+                    )
+                };
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_service_tier_override_only_changes_exact_session_pair() {
+        use forge_config::{ForgeConfig, ModelConfig};
+        use forge_domain::ServiceTier;
+        use pretty_assertions::assert_eq;
+
+        let fixture = ForgeConfig::default()
+            .session(ModelConfig::new("openrouter", "model-a"))
+            .commit(ModelConfig::new("openrouter", "model-a"))
+            .suggest(ModelConfig::new("openrouter", "model-a"));
+        let mut actual = fixture.clone();
+        super::apply_service_tier_override(
+            &mut actual,
+            "openrouter",
+            "model-a",
+            ServiceTier::Priority,
+        );
+        let expected = fixture
+            .clone()
+            .session(ModelConfig::new("openrouter", "model-a").service_tier(ServiceTier::Priority));
+        assert_eq!(actual, expected);
+
+        for (provider, model) in [("other", "model-a"), ("openrouter", "other")] {
+            let mut actual = fixture.clone();
+            super::apply_service_tier_override(&mut actual, provider, model, ServiceTier::Flex);
+            let expected = fixture.clone();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_service_tier_override_does_not_create_session() {
+        use forge_config::ForgeConfig;
+        use forge_domain::ServiceTier;
+        use pretty_assertions::assert_eq;
+
+        let fixture = ForgeConfig::default();
+        let mut actual = fixture.clone();
+        super::apply_service_tier_override(
+            &mut actual,
+            "openrouter",
+            "model-a",
+            ServiceTier::Priority,
+        );
+        let expected = fixture;
+        assert_eq!(actual, expected);
+    }
+
+    use forge_domain::{
+        ServiceTier, ServiceTierDiscovery, ServiceTierEndpoint, ServiceTierPricing,
+    };
+    use pretty_assertions::assert_eq;
+
+    use super::service_tier_rows;
+
+    fn row_tuples(rows: &[forge_select::SelectRow]) -> Vec<(&str, &str)> {
+        rows.iter()
+            .map(|row| (row.raw.as_str(), row.display.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn test_service_tier_rows_unsupported() {
+        let fixture = ServiceTierDiscovery::Unsupported;
+
+        let rows = service_tier_rows(&fixture);
+        let actual = row_tuples(&rows);
+
+        let expected = vec![
+            (
+                "automatic",
+                "automatic — provider chooses; no explicit tier",
+            ),
+            (
+                "default",
+                "default — discovery unsupported; support and pricing unknown",
+            ),
+            (
+                "flex",
+                "flex — discovery unsupported; support and pricing unknown",
+            ),
+            (
+                "priority",
+                "priority — discovery unsupported; support and pricing unknown",
+            ),
+            (
+                "ultrafast",
+                "ultrafast — discovery unsupported; support and pricing unknown",
+            ),
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_service_tier_rows_discovered_empty() {
+        let fixture = ServiceTierDiscovery::Discovered(Vec::new());
+
+        let rows = service_tier_rows(&fixture);
+        let actual = row_tuples(&rows);
+
+        let expected = vec![
+            (
+                "automatic",
+                "automatic — provider chooses; no explicit tier",
+            ),
+            (
+                "default",
+                "default — unsupported — not advertised by discovery",
+            ),
+            ("flex", "flex — unsupported — not advertised by discovery"),
+            (
+                "priority",
+                "priority — unsupported — not advertised by discovery",
+            ),
+            (
+                "ultrafast",
+                "ultrafast — unsupported — not advertised by discovery",
+            ),
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_service_tier_rows_discovered_flex_preserves_reported_prices() {
+        let fixture = ServiceTierDiscovery::Discovered(vec![
+            ServiceTierEndpoint::new(ServiceTier::Flex)
+                .provider_name("Provider A")
+                .name("Full pricing")
+                .pricing(
+                    ServiceTierPricing::default()
+                        .prompt("0.00000100")
+                        .completion("2.50e-6")
+                        .request("0")
+                        .image("0.0300"),
+                ),
+            ServiceTierEndpoint::new(ServiceTier::Flex)
+                .provider_name("Provider B")
+                .name("Partial pricing")
+                .pricing(ServiceTierPricing::default().prompt("0.00000420")),
+            ServiceTierEndpoint::new(ServiceTier::Flex)
+                .provider_name("Provider C")
+                .name("No pricing"),
+        ]);
+
+        let rows = service_tier_rows(&fixture);
+        let actual = row_tuples(&rows);
+
+        let expected = vec![
+            (
+                "automatic",
+                "automatic — provider chooses; no explicit tier",
+            ),
+            (
+                "default",
+                "default — unsupported — not advertised by discovery",
+            ),
+            (
+                "flex",
+                "flex — supported, Provider A, Full pricing, prompt=0.00000100, completion=2.50e-6, request=0, image=0.0300; supported, Provider B, Partial pricing, prompt=0.00000420; supported, Provider C, No pricing, pricing unavailable",
+            ),
+            (
+                "priority",
+                "priority — unsupported — not advertised by discovery",
+            ),
+            (
+                "ultrafast",
+                "ultrafast — unsupported — not advertised by discovery",
+            ),
+        ];
+        assert_eq!(actual, expected);
+    }
+
     // Note: Tests for confirm_delete_conversation are disabled because
     // ForgeSelect::confirm is not easily mockable in the current
     // architecture. The functionality is tested through integration tests

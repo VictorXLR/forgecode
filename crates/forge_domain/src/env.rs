@@ -5,7 +5,7 @@ use derive_more::Display;
 use derive_setters::Setters;
 use serde::{Deserialize, Serialize};
 
-use crate::{Effort, ModelConfig};
+use crate::{Effort, ModelConfig, ModelId, ProviderId, ServiceTier};
 
 /// All discrete mutations that can be applied to the application configuration.
 ///
@@ -16,9 +16,9 @@ use crate::{Effort, ModelConfig};
 pub enum ConfigOperation {
     /// Set the active session provider and model atomically.
     ///
-    /// When the provider differs from the current session provider the entire
-    /// session (provider + model) is replaced atomically. When they match only
-    /// the model field is updated.
+    /// Replaces the session with the supplied provider, model, and service tier.
+    /// An omitted tier clears any previous preference, preventing it from leaking
+    /// when switching providers or models.
     SetSessionConfig(ModelConfig),
     /// Set the commit-message generation configuration.
     ///
@@ -27,6 +27,17 @@ pub enum ConfigOperation {
     SetCommitConfig(Option<ModelConfig>),
     /// Set the shell-command suggestion configuration.
     SetSuggestConfig(ModelConfig),
+    /// Set or clear the service tier for a specific provider/model pair.
+    ///
+    /// `None` clears the tier so the provider's default behavior is used.
+    SetServiceTier {
+        /// The provider whose model configuration should be updated.
+        provider: ProviderId,
+        /// The model whose service tier should be updated.
+        model: ModelId,
+        /// The service tier to use, or `None` to clear it.
+        service_tier: Option<ServiceTier>,
+    },
     /// Set the reasoning effort level for all agents.
     SetReasoningEffort(Effort),
 }

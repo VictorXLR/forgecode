@@ -11,6 +11,38 @@ function _forge_get_commands() {
     echo "$_FORGE_COMMANDS"
 }
 
+# Resolve the effective session pair without forwarding a tier override.
+function _forge_service_tier_pair() {
+    [[ -n "$_FORGE_SESSION_MODEL" ]] && local -x FORGE_SESSION__MODEL_ID="$_FORGE_SESSION_MODEL"
+    [[ -n "$_FORGE_SESSION_PROVIDER" ]] && local -x FORGE_SESSION__PROVIDER_ID="$_FORGE_SESSION_PROVIDER"
+    local provider model
+    provider=$(CLICOLOR_FORCE=0 "$_FORGE_BIN" config get provider) || return 1
+    model=$(CLICOLOR_FORCE=0 "$_FORGE_BIN" config get model) || return 1
+    reply=()
+    [[ -n "$provider" && -n "$model" && "$provider" != "Provider: Not set" && "$model" != "Model: Not set" ]] || return 1
+    reply=("$provider" "$model")
+}
+
+function _forge_clear_service_tier() {
+    _FORGE_SESSION_SERVICE_TIER=""
+    _FORGE_SERVICE_TIER_PROVIDER=""
+    _FORGE_SERVICE_TIER_MODEL=""
+}
+
+# Append only when the effective pair still matches (including config edits).
+function _forge_service_tier_args() {
+    [[ -n "$_FORGE_SESSION_SERVICE_TIER" ]] || return 0
+    if _forge_service_tier_pair && [[ "${reply[1]}" == "$_FORGE_SERVICE_TIER_PROVIDER" && "${reply[2]}" == "$_FORGE_SERVICE_TIER_MODEL" ]]; then
+        if [[ "$_FORGE_SESSION_SERVICE_TIER" == automatic ]]; then
+            omit_service_tier=true
+        else
+            cmd+=(--service-tier "$_FORGE_SESSION_SERVICE_TIER")
+        fi
+    else
+        _forge_clear_service_tier
+    fi
+}
+
 # Helper function to execute forge commands consistently
 # This ensures proper handling of special characters and consistent output
 function _forge_exec() {
@@ -36,6 +68,10 @@ function _forge_exec() {
         IFS="$_old_ifs"
     fi
 
+    local omit_service_tier=false
+    _forge_service_tier_args
+    # This export must live in the caller: a helper's local expires on return.
+    [[ "$omit_service_tier" == true ]] && local -x FORGE_SESSION__SERVICE_TIER_OMIT=true
     cmd+=("$@")
     [[ -n "$_FORGE_SESSION_MODEL" ]] && local -x FORGE_SESSION__MODEL_ID="$_FORGE_SESSION_MODEL"
     [[ -n "$_FORGE_SESSION_PROVIDER" ]] && local -x FORGE_SESSION__PROVIDER_ID="$_FORGE_SESSION_PROVIDER"
@@ -70,6 +106,10 @@ function _forge_exec_interactive() {
         IFS="$_old_ifs"
     fi
 
+    local omit_service_tier=false
+    _forge_service_tier_args
+    # This export must live in the caller: a helper's local expires on return.
+    [[ "$omit_service_tier" == true ]] && local -x FORGE_SESSION__SERVICE_TIER_OMIT=true
     cmd+=("$@")
     [[ -n "$_FORGE_SESSION_MODEL" ]] && local -x FORGE_SESSION__MODEL_ID="$_FORGE_SESSION_MODEL"
     [[ -n "$_FORGE_SESSION_PROVIDER" ]] && local -x FORGE_SESSION__PROVIDER_ID="$_FORGE_SESSION_PROVIDER"

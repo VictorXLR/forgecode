@@ -29,6 +29,7 @@ impl<F: ProviderRepository + EnvironmentInfra<Config = forge_config::ForgeConfig
         Some(ModelConfig {
             provider: ProviderId::from(session.provider_id.clone()),
             model: ModelId::new(session.model_id.clone()),
+            service_tier: session.service_tier,
         })
     }
 
@@ -37,6 +38,7 @@ impl<F: ProviderRepository + EnvironmentInfra<Config = forge_config::ForgeConfig
         Ok(config.commit.clone().map(|mc| ModelConfig {
             provider: ProviderId::from(mc.provider_id),
             model: ModelId::new(mc.model_id),
+            service_tier: mc.service_tier,
         }))
     }
 
@@ -45,6 +47,7 @@ impl<F: ProviderRepository + EnvironmentInfra<Config = forge_config::ForgeConfig
         Ok(config.suggest.clone().map(|mc| ModelConfig {
             provider: ProviderId::from(mc.provider_id),
             model: ModelId::new(mc.model_id),
+            service_tier: mc.service_tier,
         }))
     }
 
@@ -182,21 +185,33 @@ mod tests {
                         ConfigOperation::SetSessionConfig(mc) => {
                             let pid_str = mc.provider.as_ref().to_string();
                             let mid_str = mc.model.to_string();
-                            config.session = Some(ModelConfig::new(pid_str, mid_str));
+                            config.session = Some(ModelConfig {
+                                provider_id: pid_str,
+                                model_id: mid_str,
+                                service_tier: mc.service_tier,
+                            });
                         }
                         ConfigOperation::SetCommitConfig(mc) => {
-                            config.commit = mc.map(|m| {
-                                ModelConfig::new(
-                                    m.provider.as_ref().to_string(),
-                                    m.model.to_string(),
-                                )
+                            config.commit = mc.map(|m| ModelConfig {
+                                provider_id: m.provider.as_ref().to_string(),
+                                model_id: m.model.to_string(),
+                                service_tier: m.service_tier,
                             });
                         }
                         ConfigOperation::SetSuggestConfig(mc) => {
-                            config.suggest = Some(ModelConfig::new(
-                                mc.provider.as_ref().to_string(),
-                                mc.model.to_string(),
-                            ));
+                            config.suggest = Some(ModelConfig {
+                                provider_id: mc.provider.as_ref().to_string(),
+                                model_id: mc.model.to_string(),
+                                service_tier: mc.service_tier,
+                            });
+                        }
+                        ConfigOperation::SetServiceTier { provider, model, service_tier } => {
+                            if let Some(session) = config.session.as_mut().filter(|session| {
+                                session.provider_id == provider.as_ref().as_ref()
+                                    && session.model_id == model.as_str()
+                            }) {
+                                session.service_tier = service_tier;
+                            }
                         }
                         ConfigOperation::SetReasoningEffort(_) => {
                             // No-op in tests
@@ -297,6 +312,208 @@ mod tests {
         async fn migrate_env_credentials(&self) -> anyhow::Result<Option<MigrationResult>> {
             Ok(None)
         }
+    }
+
+    fn config_fixture() -> ForgeConfig {
+        use forge_config::ServiceTier;
+
+        ForgeConfig::default()
+            .session(
+                ModelConfig::new("openrouter", "session-model").service_tier(ServiceTier::Priority),
+            )
+            .commit(ModelConfig::new("openrouter", "commit-model").service_tier(ServiceTier::Flex))
+            .suggest(
+                ModelConfig::new("openrouter", "suggest-model")
+                    .service_tier(ServiceTier::Ultrafast),
+            )
+            .max_tokens(1234_u32)
+            .restricted(true)
+    }
+
+    fn service_fixture() -> (ForgeAppConfigService<MockInfra>, MockInfra) {
+        let fixture = MockInfra::new();
+        *fixture.config.lock().unwrap() = config_fixture();
+        (
+            ForgeAppConfigService::new(Arc::new(fixture.clone())),
+            fixture,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_read_configs_propagates_service_tiers() {
+        use forge_config::ServiceTier;
+
+        for service_tier in [
+            Some(ServiceTier::Default),
+            Some(ServiceTier::Flex),
+            Some(ServiceTier::Priority),
+            Some(ServiceTier::Ultrafast),
+            None,
+        ] {
+            let (service, fixture) = service_fixture();
+            {
+                let mut config = fixture.config.lock().unwrap();
+                config.session.as_mut().unwrap().service_tier = service_tier;
+                config.commit.as_mut().unwrap().service_tier = service_tier;
+                config.suggest.as_mut().unwrap().service_tier = service_tier;
+            }
+
+            let actual = (
+                service.get_session_config().await,
+                service.get_commit_config().await.unwrap(),
+                service.get_suggest_config().await.unwrap(),
+            );
+
+            let mut session = DomainModelConfig::new("openrouter".to_string(), "session-model");
+            let mut commit = DomainModelConfig::new("openrouter".to_string(), "commit-model");
+            let mut suggest = DomainModelConfig::new("openrouter".to_string(), "suggest-model");
+            session.service_tier = service_tier;
+            commit.service_tier = service_tier;
+            suggest.service_tier = service_tier;
+            let expected = (Some(session), Some(commit), Some(suggest));
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_config_sets_and_clears_service_tier() {
+        use forge_config::ServiceTier;
+
+        let (service, fixture) = service_fixture();
+        for service_tier in [
+            Some(ServiceTier::Default),
+            Some(ServiceTier::Flex),
+            Some(ServiceTier::Priority),
+            Some(ServiceTier::Ultrafast),
+            None,
+        ] {
+            service
+                .update_config(vec![ConfigOperation::SetServiceTier {
+                    provider: "openrouter".to_string().into(),
+                    model: "session-model".into(),
+                    service_tier,
+                }])
+                .await
+                .unwrap();
+            let actual = (
+                fixture.get_config().unwrap(),
+                service.get_session_config().await,
+            );
+
+            let mut config = config_fixture();
+            config.session.as_mut().unwrap().service_tier = service_tier;
+            let mut session = DomainModelConfig::new("openrouter".to_string(), "session-model");
+            session.service_tier = service_tier;
+            let expected = (config, Some(session));
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_config_switches_sessions_without_tier_leaks() {
+        use forge_config::ServiceTier;
+
+        let (service, fixture) = service_fixture();
+        for (provider, model) in [
+            ("openrouter", "other-model"),
+            ("anthropic", "claude-3"),
+            ("openrouter", "session-model"),
+        ] {
+            service
+                .update_config(vec![ConfigOperation::SetSessionConfig(
+                    DomainModelConfig::new(provider.to_string(), model),
+                )])
+                .await
+                .unwrap();
+            let actual = (
+                fixture.get_config().unwrap(),
+                service.get_session_config().await,
+            );
+
+            let expected = (
+                config_fixture().session(ModelConfig::new(provider, model)),
+                Some(DomainModelConfig::new(provider.to_string(), model)),
+            );
+            assert_eq!(actual, expected);
+
+            service
+                .update_config(vec![ConfigOperation::SetServiceTier {
+                    provider: provider.to_string().into(),
+                    model: model.into(),
+                    service_tier: Some(ServiceTier::Ultrafast),
+                }])
+                .await
+                .unwrap();
+            let actual = (
+                fixture.get_config().unwrap(),
+                service.get_session_config().await,
+            );
+            let expected = (
+                config_fixture().session(
+                    ModelConfig::new(provider, model).service_tier(ServiceTier::Ultrafast),
+                ),
+                Some(
+                    DomainModelConfig::new(provider.to_string(), model)
+                        .service_tier(ServiceTier::Ultrafast),
+                ),
+            );
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_config_propagates_all_model_payload_tiers() {
+        use forge_config::ServiceTier;
+
+        let (service, fixture) = service_fixture();
+        service
+            .update_config(vec![
+                ConfigOperation::SetSessionConfig(
+                    DomainModelConfig::new("anthropic".to_string(), "session-new")
+                        .service_tier(ServiceTier::Default),
+                ),
+                ConfigOperation::SetCommitConfig(Some(
+                    DomainModelConfig::new("anthropic".to_string(), "commit-new")
+                        .service_tier(ServiceTier::Flex),
+                )),
+                ConfigOperation::SetSuggestConfig(
+                    DomainModelConfig::new("anthropic".to_string(), "suggest-new")
+                        .service_tier(ServiceTier::Ultrafast),
+                ),
+            ])
+            .await
+            .unwrap();
+        let actual = (
+            fixture.get_config().unwrap(),
+            service.get_session_config().await,
+            service.get_commit_config().await.unwrap(),
+            service.get_suggest_config().await.unwrap(),
+        );
+
+        let expected = (
+            config_fixture()
+                .session(
+                    ModelConfig::new("anthropic", "session-new").service_tier(ServiceTier::Default),
+                )
+                .commit(ModelConfig::new("anthropic", "commit-new").service_tier(ServiceTier::Flex))
+                .suggest(
+                    ModelConfig::new("anthropic", "suggest-new")
+                        .service_tier(ServiceTier::Ultrafast),
+                ),
+            Some(
+                DomainModelConfig::new("anthropic".to_string(), "session-new")
+                    .service_tier(ServiceTier::Default),
+            ),
+            Some(
+                DomainModelConfig::new("anthropic".to_string(), "commit-new")
+                    .service_tier(ServiceTier::Flex),
+            ),
+            Some(
+                DomainModelConfig::new("anthropic".to_string(), "suggest-new")
+                    .service_tier(ServiceTier::Ultrafast),
+            ),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]

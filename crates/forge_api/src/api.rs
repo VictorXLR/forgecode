@@ -30,6 +30,20 @@ pub trait API: Sync + Send {
     /// rather than an empty list.
     async fn get_all_provider_models(&self) -> Result<Vec<ProviderModels>>;
 
+    /// Discovers service tiers for the specified provider and model.
+    ///
+    /// # Arguments
+    /// * `provider` - Provider whose service tiers should be queried.
+    /// * `model` - Model whose service tiers should be discovered.
+    ///
+    /// # Errors
+    /// Returns an error if provider resolution or discovery fails.
+    async fn discover_service_tiers(
+        &self,
+        provider: ProviderId,
+        model: ModelId,
+    ) -> Result<forge_domain::ServiceTierDiscovery>;
+
     /// Provides a list of agents available in the current environment
     async fn get_agents(&self) -> Result<Vec<Agent>>;
 

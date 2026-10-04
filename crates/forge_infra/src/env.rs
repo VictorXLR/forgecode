@@ -35,19 +35,33 @@ fn apply_config_op(fc: &mut ForgeConfig, op: ConfigOperation) {
         ConfigOperation::SetSessionConfig(mc) => {
             let pid_str = mc.provider.as_ref().to_string();
             let mid_str = mc.model.to_string();
-            fc.session = Some(ModelConfig { provider_id: pid_str, model_id: mid_str });
+            fc.session = Some(ModelConfig {
+                provider_id: pid_str,
+                model_id: mid_str,
+                service_tier: mc.service_tier,
+            });
         }
         ConfigOperation::SetCommitConfig(mc) => {
             fc.commit = mc.map(|m| ModelConfig {
                 provider_id: m.provider.as_ref().to_string(),
                 model_id: m.model.to_string(),
+                service_tier: m.service_tier,
             });
         }
         ConfigOperation::SetSuggestConfig(mc) => {
             fc.suggest = Some(ModelConfig {
                 provider_id: mc.provider.as_ref().to_string(),
                 model_id: mc.model.to_string(),
+                service_tier: mc.service_tier,
             });
+        }
+        ConfigOperation::SetServiceTier { provider, model, service_tier } => {
+            if let Some(session) = fc.session.as_mut().filter(|session| {
+                session.provider_id == provider.as_ref().as_ref()
+                    && session.model_id == model.as_str()
+            }) {
+                session.service_tier = service_tier;
+            }
         }
         ConfigOperation::SetReasoningEffort(effort) => {
             let config_effort = match effort {
@@ -166,6 +180,142 @@ mod tests {
 
     use super::*;
 
+    fn config_fixture() -> ForgeConfig {
+        ForgeConfig::default()
+            .session(
+                ModelConfig::new("openrouter", "session-model")
+                    .service_tier(forge_config::ServiceTier::Priority),
+            )
+            .commit(
+                ModelConfig::new("openrouter", "commit-model")
+                    .service_tier(forge_config::ServiceTier::Flex),
+            )
+            .suggest(
+                ModelConfig::new("openrouter", "suggest-model")
+                    .service_tier(forge_config::ServiceTier::Ultrafast),
+            )
+            .max_tokens(1234_u32)
+            .max_search_lines(42_usize)
+            .restricted(true)
+    }
+
+    #[test]
+    fn test_apply_config_op_service_tier_only_mutates_matching_session() {
+        use forge_config::ServiceTier;
+
+        for service_tier in [
+            Some(ServiceTier::Default),
+            Some(ServiceTier::Flex),
+            Some(ServiceTier::Priority),
+            Some(ServiceTier::Ultrafast),
+            None,
+        ] {
+            let mut actual = config_fixture();
+
+            apply_config_op(
+                &mut actual,
+                ConfigOperation::SetServiceTier {
+                    provider: "openrouter".to_string().into(),
+                    model: "session-model".into(),
+                    service_tier,
+                },
+            );
+
+            let mut expected = config_fixture();
+            expected.session.as_mut().unwrap().service_tier = service_tier;
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_apply_config_op_service_tier_ignores_mismatches_and_absent_session() {
+        use forge_config::ServiceTier;
+
+        for (provider, model, absent_session) in [
+            ("other-provider", "session-model", false),
+            ("openrouter", "other-model", false),
+            ("openrouter", "session-model", true),
+        ] {
+            let mut fixture = config_fixture();
+            if absent_session {
+                fixture.session = None;
+            }
+            let mut actual = fixture.clone();
+
+            apply_config_op(
+                &mut actual,
+                ConfigOperation::SetServiceTier {
+                    provider: provider.to_string().into(),
+                    model: model.into(),
+                    service_tier: Some(ServiceTier::Ultrafast),
+                },
+            );
+
+            let expected = fixture;
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_apply_config_op_session_switches_do_not_leak_service_tier() {
+        use forge_domain::ModelConfig as DomainModelConfig;
+
+        let mut actual = config_fixture();
+        for (provider, model) in [
+            ("openrouter", "other-model"),
+            ("anthropic", "claude-3"),
+            ("openrouter", "session-model"),
+        ] {
+            apply_config_op(
+                &mut actual,
+                ConfigOperation::SetSessionConfig(DomainModelConfig::new(
+                    provider.to_string(),
+                    model,
+                )),
+            );
+
+            let expected = config_fixture().session(ModelConfig::new(provider, model));
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_apply_config_op_model_payloads_propagate_service_tier() {
+        use forge_config::ServiceTier;
+        use forge_domain::ModelConfig as DomainModelConfig;
+
+        for service_tier in [
+            Some(ServiceTier::Default),
+            Some(ServiceTier::Flex),
+            Some(ServiceTier::Priority),
+            Some(ServiceTier::Ultrafast),
+            None,
+        ] {
+            for target in ["session", "commit", "suggest"] {
+                let mut actual = config_fixture();
+                let mut payload = DomainModelConfig::new("anthropic".to_string(), "claude-3");
+                payload.service_tier = service_tier;
+                let op = match target {
+                    "session" => ConfigOperation::SetSessionConfig(payload),
+                    "commit" => ConfigOperation::SetCommitConfig(Some(payload)),
+                    _ => ConfigOperation::SetSuggestConfig(payload),
+                };
+
+                apply_config_op(&mut actual, op);
+
+                let mut expected = config_fixture();
+                let mut model = ModelConfig::new("anthropic", "claude-3");
+                model.service_tier = service_tier;
+                match target {
+                    "session" => expected.session = Some(model),
+                    "commit" => expected.commit = Some(model),
+                    _ => expected.suggest = Some(model),
+                }
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
     #[test]
     fn test_to_environment_sets_cwd() {
         let fixture_cwd = PathBuf::from("/test/cwd");
@@ -235,6 +385,7 @@ mod tests {
             session: Some(ForgeCfgModelConfig {
                 provider_id: "openai".to_string(),
                 model_id: "gpt-4".to_string(),
+                service_tier: None,
             }),
             ..Default::default()
         };

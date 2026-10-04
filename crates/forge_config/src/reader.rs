@@ -33,10 +33,27 @@ static LOAD_DOT_ENV: LazyLock<()> = LazyLock::new(|| {
 /// Caches base-path resolution for the process lifetime.
 static BASE_PATH: LazyLock<PathBuf> = LazyLock::new(ConfigReader::resolve_base_path);
 
+/// Environment source excluding the child-only omission control from config data.
+#[derive(Debug, Clone)]
+struct SessionEnvironment(config::Environment);
+
+impl config::Source for SessionEnvironment {
+    fn clone_into_box(&self) -> Box<dyn config::Source + Send + Sync> {
+        Box::new(self.clone())
+    }
+
+    fn collect(&self) -> Result<config::Map<String, config::Value>, config::ConfigError> {
+        let mut values = self.0.collect()?;
+        values.remove("session.service_tier_omit");
+        Ok(values)
+    }
+}
+
 /// Merges [`ForgeConfig`] from layered sources using a builder pattern.
 #[derive(Default)]
 pub struct ConfigReader {
     builder: ConfigBuilder<DefaultState>,
+    read_env: bool,
 }
 
 impl ConfigReader {
@@ -101,8 +118,10 @@ impl ConfigReader {
     }
 
     /// Adds `FORGE_`-prefixed environment variables as a config source.
+    /// Enables child-only service tier omission after all sources are layered.
     pub fn read_env(mut self) -> Self {
-        self.builder = self.builder.add_source(
+        self.read_env = true;
+        self.builder = self.builder.add_source(SessionEnvironment(
             config::Environment::with_prefix("FORGE")
                 .prefix_separator("_")
                 .separator("__")
@@ -110,7 +129,7 @@ impl ConfigReader {
                 .list_separator(",")
                 .with_list_parse_key("retry.status_codes")
                 .with_list_parse_key("http.root_cert_paths"),
-        );
+        ));
 
         self
     }
@@ -127,7 +146,15 @@ impl ConfigReader {
     pub fn build(self) -> crate::Result<ForgeConfig> {
         *LOAD_DOT_ENV;
         let config = self.builder.build()?;
-        Ok(config.try_deserialize::<ForgeConfig>()?)
+        let mut config = config.try_deserialize::<ForgeConfig>()?;
+        if self.read_env
+            && std::env::var("FORGE_SESSION__SERVICE_TIER_OMIT")
+                .is_ok_and(|value| value.eq_ignore_ascii_case("true"))
+            && let Some(session) = config.session.as_mut()
+        {
+            session.service_tier = None;
+        }
+        Ok(config)
     }
 
     /// Adds `~/.forge/.forge.toml` as a config source, silently skipping if
@@ -243,6 +270,7 @@ mod tests {
             session: Some(ModelConfig {
                 provider_id: "anthropic".to_string(),
                 model_id: "claude-3".to_string(),
+                service_tier: None,
             }),
             ..Default::default()
         };
@@ -261,6 +289,7 @@ mod tests {
             Some(ModelConfig {
                 provider_id: "anthropic".to_string(),
                 model_id: "claude-3".to_string(),
+                service_tier: None,
             })
         );
 
@@ -288,8 +317,75 @@ mod tests {
         let expected = Some(ModelConfig {
             provider_id: "fake-provider".to_string(),
             model_id: "fake-model".to_string(),
+            service_tier: None,
         });
         assert_eq!(actual.session, expected);
+    }
+
+    fn tier_fixture() -> ForgeConfig {
+        ForgeConfig::default()
+            .session(
+                ModelConfig::new("openrouter", "session-model")
+                    .service_tier(crate::ServiceTier::Priority),
+            )
+            .commit(
+                ModelConfig::new("openrouter", "commit-model")
+                    .service_tier(crate::ServiceTier::Flex),
+            )
+            .suggest(
+                ModelConfig::new("openrouter", "suggest-model")
+                    .service_tier(crate::ServiceTier::Default),
+            )
+    }
+
+    #[test]
+    fn test_session_service_tier_omit_after_layering() {
+        for flag in ["true", "false"] {
+            let _guard = EnvGuard::set(&[("FORGE_SESSION__SERVICE_TIER_OMIT", flag)]);
+            let fixture = tier_fixture();
+            let contents = toml_edit::ser::to_string_pretty(&fixture).unwrap();
+
+            let actual = ConfigReader::default()
+                .read_env()
+                .read_toml(&contents)
+                .build()
+                .unwrap();
+
+            let expected = if flag == "true" {
+                fixture.session(ModelConfig::new("openrouter", "session-model"))
+            } else {
+                fixture
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn test_session_service_tier_omit_requires_read_env_and_is_not_persisted() {
+        let _guard = EnvGuard::set(&[("FORGE_SESSION__SERVICE_TIER_OMIT", "true")]);
+        let fixture = tier_fixture();
+        let contents = toml_edit::ser::to_string_pretty(&fixture).unwrap();
+
+        let actual = ConfigReader::default()
+            .read_toml(&contents)
+            .build()
+            .unwrap();
+
+        let expected = fixture;
+        assert_eq!(actual, expected);
+        assert!(
+            !toml_edit::ser::to_string_pretty(&actual)
+                .unwrap()
+                .contains("service_tier_omit")
+        );
+    }
+
+    #[test]
+    fn test_session_service_tier_omit_without_session() {
+        let _guard = EnvGuard::set(&[("FORGE_SESSION__SERVICE_TIER_OMIT", "true")]);
+        let actual = ConfigReader::default().read_env().build().unwrap();
+        let expected = ForgeConfig::default();
+        assert_eq!(actual, expected);
     }
 
     #[test]

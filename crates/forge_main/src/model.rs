@@ -128,6 +128,8 @@ impl ForgeCommandManager {
                 | "cr"
                 | "model-reset"
                 | "mr"
+                | "service-tier"
+                | "config-service-tier"
                 | "reasoning-effort"
                 | "re"
                 | "config-reasoning-effort"
@@ -427,6 +429,16 @@ pub enum AppCommand {
     #[strum(props(usage = "Reset session overrides to global config [alias: cr]"))]
     #[command(name = "config-reload", aliases = ["cr", "model-reset", "mr"])]
     ConfigReload,
+
+    /// Select and persist a provider/model service tier in global config.
+    #[strum(props(usage = "Set service tier for a provider/model pair in global config"))]
+    #[command(name = "service-tier")]
+    ServiceTier,
+
+    /// Select and persist a provider/model service tier in global config.
+    #[strum(props(usage = "Set service tier for a provider/model pair in global config"))]
+    #[command(name = "config-service-tier")]
+    ConfigServiceTier,
 
     /// Set the reasoning effort level.
     /// This can be triggered with the '/reasoning-effort' command (alias: re).
@@ -738,6 +750,8 @@ impl AppCommand {
             AppCommand::Config => "config",
             AppCommand::ConfigModel => "config-model",
             AppCommand::ConfigReload => "config-reload",
+            AppCommand::ServiceTier => "service-tier",
+            AppCommand::ConfigServiceTier => "config-service-tier",
             AppCommand::ReasoningEffort => "reasoning-effort",
             AppCommand::ConfigReasoningEffort => "config-reasoning-effort",
             AppCommand::ConfigCommitModel => "config-commit-model",
@@ -865,6 +879,22 @@ mod tests {
                 }
             }
             Ok(())
+        }
+    }
+
+    #[test]
+    fn test_parse_service_tier_commands() {
+        let fixture = ForgeCommandManager::default();
+        for (input, expected) in [
+            (":service-tier", AppCommand::ServiceTier),
+            (":config-service-tier", AppCommand::ConfigServiceTier),
+        ] {
+            let actual = fixture.parse(input).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.name(), input.trim_start_matches(':'));
+            assert!(actual.usage().contains("global config"));
+            assert!(ForgeCommandManager::is_reserved_command(actual.name()));
+            assert!(fixture.list().iter().any(|cmd| cmd.name == actual.name()));
         }
     }
 

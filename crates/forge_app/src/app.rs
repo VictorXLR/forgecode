@@ -298,6 +298,22 @@ impl<S: Services + EnvironmentInfra<Config = forge_config::ForgeConfig>> ForgeAp
         self.services.models(provider).await
     }
 
+    /// Discovers service tiers for the specified provider and model.
+    ///
+    /// # Arguments
+    /// * `provider` - Provider whose service tiers should be queried.
+    /// * `model` - Model whose service tiers should be discovered.
+    ///
+    /// # Errors
+    /// Returns an error if provider resolution or discovery fails.
+    pub async fn discover_service_tiers(
+        &self,
+        provider: ProviderId,
+        model: ModelId,
+    ) -> Result<ServiceTierDiscovery> {
+        self.services.discover_service_tiers(provider, model).await
+    }
+
     /// Gets available models from all configured providers concurrently.
     ///
     /// Returns a list of `ProviderModels` for each configured provider that

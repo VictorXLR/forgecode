@@ -104,6 +104,22 @@ pub trait ChatRepository: Send + Sync {
         provider: Provider<Url>,
     ) -> ResultStream<ChatCompletionMessage, anyhow::Error>;
     async fn models(&self, provider: Provider<Url>) -> anyhow::Result<Vec<Model>>;
+
+    /// Discovers service tier endpoints for a provider model.
+    ///
+    /// # Arguments
+    /// * `provider` - Provider with resolved URLs and credentials.
+    /// * `model_id` - Model whose service tiers should be discovered.
+    ///
+    /// # Errors
+    /// Returns an error if provider discovery fails.
+    async fn discover_service_tiers(
+        &self,
+        _provider: Provider<Url>,
+        _model_id: ModelId,
+    ) -> Result<crate::ServiceTierDiscovery> {
+        Ok(crate::ServiceTierDiscovery::Unsupported)
+    }
 }
 
 #[async_trait::async_trait]

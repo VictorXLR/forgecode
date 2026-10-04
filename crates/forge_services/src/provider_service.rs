@@ -8,7 +8,7 @@ use forge_app::domain::{
 };
 use forge_domain::{
     AuthCredential, ChatRepository, Context, MigrationResult, ModelSource, Provider,
-    ProviderRepository, ProviderTemplate,
+    ProviderRepository, ProviderTemplate, ServiceTierDiscovery,
 };
 use url::Url;
 
@@ -120,6 +120,29 @@ impl<R: ChatRepository + ProviderRepository> ProviderService for ForgeProviderSe
         self.repository.models(provider).await
     }
 
+    /// Discovers service tiers using the rendered OpenRouter provider.
+    ///
+    /// # Arguments
+    /// * `provider_id` - Provider to query; other providers return unsupported.
+    /// * `model_id` - Model whose service tiers should be discovered.
+    ///
+    /// # Errors
+    /// Returns provider lookup, URL rendering, or repository discovery errors.
+    async fn discover_service_tiers(
+        &self,
+        provider_id: ProviderId,
+        model_id: ModelId,
+    ) -> Result<ServiceTierDiscovery> {
+        if provider_id != ProviderId::OPEN_ROUTER {
+            return Ok(ServiceTierDiscovery::Unsupported);
+        }
+
+        let provider = self.get_provider(provider_id).await?;
+        self.repository
+            .discover_service_tiers(provider, model_id)
+            .await
+    }
+
     async fn get_all_providers(&self) -> Result<Vec<AnyProvider>> {
         let providers = self.repository.get_all_providers().await?;
 
@@ -164,6 +187,8 @@ impl<R: ChatRepository + ProviderRepository> ProviderService for ForgeProviderSe
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use forge_app::domain::ProviderId;
     use forge_domain::{
         AuthDetails, AuthMethod, InputModality, ModelSource, ProviderType, Template,
@@ -176,11 +201,31 @@ mod tests {
     struct MockProviderRepository {
         models: Vec<Model>,
         providers: Vec<AnyProvider>,
+        template: Option<ProviderTemplate>,
+        discovery: ServiceTierDiscovery,
+        provider_error: Option<&'static str>,
+        discovery_error: Option<&'static str>,
+        calls: Mutex<Vec<RepositoryCall>>,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum RepositoryCall {
+        GetProvider(ProviderId),
+        GetCredential(ProviderId),
+        Discover(Box<Provider<Url>>, ModelId),
     }
 
     impl MockProviderRepository {
         fn new(models: Vec<Model>) -> Self {
-            Self { models, providers: vec![] }
+            Self {
+                models,
+                providers: vec![],
+                template: None,
+                discovery: ServiceTierDiscovery::Unsupported,
+                provider_error: None,
+                discovery_error: None,
+                calls: Mutex::new(vec![]),
+            }
         }
 
         fn with_providers(mut self, providers: Vec<AnyProvider>) -> Self {
@@ -200,6 +245,21 @@ mod tests {
             Ok(Box::pin(tokio_stream::empty()))
         }
 
+        async fn discover_service_tiers(
+            &self,
+            provider: Provider<Url>,
+            model_id: ModelId,
+        ) -> Result<ServiceTierDiscovery> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RepositoryCall::Discover(Box::new(provider), model_id));
+            if let Some(error) = self.discovery_error {
+                anyhow::bail!(error);
+            }
+            Ok(self.discovery.clone())
+        }
+
         async fn models(&self, _provider: Provider<Url>) -> Result<Vec<Model>> {
             Ok(self.models.clone())
         }
@@ -211,11 +271,22 @@ mod tests {
             Ok(self.providers.clone())
         }
 
-        async fn get_provider(&self, _id: ProviderId) -> Result<ProviderTemplate> {
-            Ok(test_template_provider())
+        async fn get_provider(&self, id: ProviderId) -> Result<ProviderTemplate> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RepositoryCall::GetProvider(id));
+            if let Some(error) = self.provider_error {
+                anyhow::bail!(error);
+            }
+            Ok(self.template.clone().unwrap_or_else(test_template_provider))
         }
 
-        async fn get_credential(&self, _id: &ProviderId) -> Result<Option<AuthCredential>> {
+        async fn get_credential(&self, id: &ProviderId) -> Result<Option<AuthCredential>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RepositoryCall::GetCredential(id.clone()));
             Ok(None)
         }
 
@@ -289,6 +360,162 @@ mod tests {
             supports_reasoning: Some(false),
             input_modalities: vec![InputModality::Text],
         }
+    }
+
+    fn discovery_fixture() -> (MockProviderRepository, Provider<Url>, ModelId) {
+        let mut template = test_template_provider();
+        template.id = ProviderId::OPEN_ROUTER;
+        template.url = Template::new("https://{{HOST}}/v1/chat/completions");
+        template.models = Some(ModelSource::Url(Template::new(
+            "https://{{HOST}}/v1/models",
+        )));
+        let credential = template.credential.as_mut().unwrap();
+        credential.id = ProviderId::OPEN_ROUTER;
+        credential.url_params.insert(
+            forge_domain::URLParam::from("HOST".to_string()),
+            forge_domain::URLParamValue::from("openrouter.example".to_string()),
+        );
+
+        let mut expected = test_provider();
+        expected.id = ProviderId::OPEN_ROUTER;
+        expected.url = Url::parse("https://openrouter.example/v1/chat/completions").unwrap();
+        expected.models = Some(ModelSource::Url(
+            Url::parse("https://openrouter.example/v1/models").unwrap(),
+        ));
+        expected.credential = template.credential.clone();
+
+        let mut repository = MockProviderRepository::new(vec![]);
+        repository.template = Some(template);
+        (repository, expected, ModelId::from("vendor/model:exact"))
+    }
+
+    #[tokio::test]
+    async fn test_discovery_unsupported_without_repository_or_credentials() {
+        let mut fixture = MockProviderRepository::new(vec![]);
+        fixture.provider_error = Some("provider must not be accessed");
+        fixture.discovery_error = Some("discovery must not be accessed");
+        let repository = Arc::new(fixture);
+        let service = ForgeProviderService::new(repository.clone());
+
+        let actual = service
+            .discover_service_tiers(ProviderId::OPENAI, ModelId::from("gpt-4"))
+            .await
+            .unwrap();
+        let expected = ServiceTierDiscovery::Unsupported;
+
+        assert_eq!(actual, expected);
+        assert_eq!(*repository.calls.lock().unwrap(), vec![]);
+    }
+
+    #[tokio::test]
+    async fn test_discovery_renders_and_delegates_preserving_results() {
+        let fixtures = vec![
+            ServiceTierDiscovery::Discovered(vec![
+                forge_domain::ServiceTierEndpoint::new(forge_domain::ServiceTier::Priority)
+                    .name("Priority endpoint")
+                    .provider_name("Endpoint provider"),
+            ]),
+            ServiceTierDiscovery::Discovered(vec![]),
+            ServiceTierDiscovery::Unsupported,
+        ];
+
+        for expected in fixtures {
+            let (mut fixture, provider, model_id) = discovery_fixture();
+            fixture.discovery = expected.clone();
+            let repository = Arc::new(fixture);
+            let service = ForgeProviderService::new(repository.clone());
+
+            let actual = service
+                .discover_service_tiers(ProviderId::OPEN_ROUTER, model_id.clone())
+                .await
+                .unwrap();
+            let expected_calls = vec![
+                RepositoryCall::GetProvider(ProviderId::OPEN_ROUTER),
+                RepositoryCall::Discover(Box::new(provider), model_id),
+            ];
+
+            assert_eq!(actual, expected);
+            assert_eq!(*repository.calls.lock().unwrap(), expected_calls);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_discovery_propagates_provider_error_without_discovery() {
+        let (mut fixture, _, model_id) = discovery_fixture();
+        fixture.provider_error = Some("provider lookup failed");
+        let repository = Arc::new(fixture);
+        let service = ForgeProviderService::new(repository.clone());
+
+        let actual = service
+            .discover_service_tiers(ProviderId::OPEN_ROUTER, model_id)
+            .await
+            .unwrap_err();
+        let expected = "provider lookup failed";
+
+        assert_eq!(actual.to_string(), expected);
+        assert_eq!(
+            *repository.calls.lock().unwrap(),
+            vec![RepositoryCall::GetProvider(ProviderId::OPEN_ROUTER)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discovery_propagates_render_errors_without_discovery() {
+        for url in ["https://{{MISSING}}/v1", "not a valid URL"] {
+            let (mut fixture, _, model_id) = discovery_fixture();
+            fixture.template.as_mut().unwrap().url = Template::new(url);
+            let repository = Arc::new(fixture);
+            let service = ForgeProviderService::new(repository.clone());
+
+            let actual = service
+                .discover_service_tiers(ProviderId::OPEN_ROUTER, model_id)
+                .await;
+            let expected_calls = vec![RepositoryCall::GetProvider(ProviderId::OPEN_ROUTER)];
+
+            assert!(actual.is_err());
+            assert_eq!(*repository.calls.lock().unwrap(), expected_calls);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_discovery_missing_credential_without_discovery() {
+        let (mut fixture, _, model_id) = discovery_fixture();
+        fixture.template.as_mut().unwrap().credential = None;
+        let repository = Arc::new(fixture);
+        let service = ForgeProviderService::new(repository.clone());
+
+        let actual = service
+            .discover_service_tiers(ProviderId::OPEN_ROUTER, model_id)
+            .await
+            .unwrap_err();
+        let expected = "Provider has no credential";
+
+        assert_eq!(actual.to_string(), expected);
+        assert_eq!(
+            *repository.calls.lock().unwrap(),
+            vec![RepositoryCall::GetProvider(ProviderId::OPEN_ROUTER)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discovery_propagates_repository_error() {
+        let (mut fixture, provider, model_id) = discovery_fixture();
+        fixture.discovery_error = Some("service tier discovery failed");
+        let repository = Arc::new(fixture);
+        let service = ForgeProviderService::new(repository.clone());
+
+        let actual = service
+            .discover_service_tiers(ProviderId::OPEN_ROUTER, model_id.clone())
+            .await
+            .unwrap_err();
+        let expected = "service tier discovery failed";
+        let expected_calls = vec![
+            RepositoryCall::GetProvider(ProviderId::OPEN_ROUTER),
+            RepositoryCall::Discover(Box::new(provider), model_id),
+        ];
+
+        assert_eq!(actual.to_string(), expected);
+        assert_eq!(*repository.calls.lock().unwrap(), expected_calls);
     }
 
     #[tokio::test]

@@ -743,6 +743,10 @@ pub(super) struct ContextRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningConfigRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_routing: Option<forge_domain::ProviderRouting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_tier: Option<forge_domain::ServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
 }
 
@@ -767,6 +771,8 @@ impl From<&Context> for ContextRecord {
             top_p: context.top_p.map(|t| t.value()),
             top_k: context.top_k.map(|t| t.value()),
             reasoning: context.reasoning.as_ref().map(ReasoningConfigRecord::from),
+            provider_routing: context.provider_routing.clone(),
+            service_tier: context.service_tier.clone(),
             stream: context.stream,
         }
     }
@@ -817,6 +823,8 @@ impl TryFrom<ContextRecord> for Context {
             top_p: record.top_p.map(forge_domain::TopP::new_unchecked),
             top_k: record.top_k.map(forge_domain::TopK::new_unchecked),
             reasoning: record.reasoning.map(Into::into),
+            provider_routing: record.provider_routing,
+            service_tier: record.service_tier,
             stream: record.stream,
             response_format: None,
         })

@@ -140,8 +140,8 @@ impl<F: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig> + Sync>
     ) -> ResultStream<ChatCompletionMessage, anyhow::Error> {
         match provider.response {
             Some(ProviderResponse::OpenAI) => {
-                // Check if model is a Codex model
-                if model_id.as_str().contains("gpt-5")
+                // Check if model is a Codex / GPT-5 / GPT-6 Responses API model
+                if (model_id.as_str().contains("gpt-5") || model_id.as_str().contains("gpt-6"))
                     && (provider.id == ProviderId::OPENAI
                         || provider.id == ProviderId::GITHUB_COPILOT
                         || provider.id == ProviderId::CODEX)

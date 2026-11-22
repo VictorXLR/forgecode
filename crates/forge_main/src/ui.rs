@@ -322,6 +322,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .get_agent_model(self.api.get_active_agent().await)
             .await;
         let reasoning_effort = self.api.get_reasoning_effort().await.ok().flatten();
+        let service_tier = self.api.get_service_tier().await.ok().flatten();
         let mut forge_prompt = ForgePrompt::new(self.state.cwd.clone(), agent_id);
         if let Some(u) = usage {
             forge_prompt.usage(u);
@@ -331,6 +332,9 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         }
         if let Some(e) = reasoning_effort {
             forge_prompt.reasoning_effort(e);
+        }
+        if let Some(t) = service_tier {
+            forge_prompt.service_tier(t);
         }
         self.console.prompt(&mut forge_prompt).await
     }
@@ -873,6 +877,14 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                             .await?
                         {
                             self.writeln(effort)?;
+                        }
+                    }
+                    SelectCommand::ServiceTier { query } => {
+                        if let Some(tier) = self
+                            .select_service_tier("Service Tier", query.clone())
+                            .await?
+                        {
+                            self.writeln(tier)?;
                         }
                     }
                     SelectCommand::Command { query } => {
@@ -2334,6 +2346,12 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             AppCommand::ConfigReasoningEffort => {
                 self.on_reasoning_effort_selection(true).await?;
             }
+            AppCommand::ServiceTier => {
+                self.on_service_tier_selection(false).await?;
+            }
+            AppCommand::ConfigServiceTier => {
+                self.on_service_tier_selection(true).await?;
+            }
             AppCommand::ConfigCommitModel => {
                 self.on_config_commit_model().await?;
             }
@@ -2459,7 +2477,9 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             let effort = forge_domain::Effort::from_str(&effort_str)
                 .map_err(|_| anyhow::anyhow!("Invalid effort level: {effort_str}"))?;
             self.api
-                .update_config(vec![ConfigOperation::SetReasoningEffort(effort.clone())])
+                .update_config(vec![ConfigOperation::SetReasoningEffort(Some(
+                    effort.clone(),
+                ))])
                 .await?;
             self.writeln_title(
                 TitleFormat::action(effort_str).sub_title("is now the reasoning effort"),
@@ -2480,6 +2500,59 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
         let rows = effort_levels
             .iter()
             .map(|level| SelectRow::new(*level, *level))
+            .collect();
+
+        Ok(self
+            .select_raw_row(prompt, query, rows, 0, current_str)?
+            .map(|row| row.raw))
+    }
+
+    async fn on_service_tier_selection(&mut self, global: bool) -> anyhow::Result<()> {
+        use std::str::FromStr;
+
+        let prompt = if global {
+            "Config Service Tier"
+        } else {
+            "Service Tier"
+        };
+
+        let selected = self.select_service_tier(prompt, None).await?;
+
+        if let Some(tier_str) = selected {
+            if tier_str == "unset" {
+                self.api
+                    .update_config(vec![ConfigOperation::SetServiceTier(None)])
+                    .await?;
+                self.writeln_title(TitleFormat::action("Service tier cleared"))?;
+            } else {
+                let tier = forge_domain::ServiceTier::from_str(&tier_str)
+                    .map_err(|_| anyhow::anyhow!("Invalid service tier: {tier_str}"))?;
+                self.api
+                    .update_config(vec![ConfigOperation::SetServiceTier(Some(tier))])
+                    .await?;
+                self.writeln_title(
+                    TitleFormat::action(tier_str).sub_title("is now the service tier"),
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn select_service_tier(
+        &self,
+        prompt: &str,
+        query: Option<String>,
+    ) -> anyhow::Result<Option<String>> {
+        let tiers = ["unset", "auto", "default", "flex", "scale", "priority"];
+        let current_tier = self.api.get_service_tier().await.ok().flatten();
+        let current_str = current_tier
+            .as_ref()
+            .map(|t| t.to_string())
+            .or_else(|| Some("unset".to_string()));
+        let rows = tiers
+            .iter()
+            .map(|tier| SelectRow::new(*tier, *tier))
             .collect();
 
         Ok(self
@@ -4536,11 +4609,22 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             }
             ConfigSetField::ReasoningEffort { effort } => {
                 self.api
-                    .update_config(vec![ConfigOperation::SetReasoningEffort(effort.clone())])
+                    .update_config(vec![ConfigOperation::SetReasoningEffort(Some(
+                        effort.clone(),
+                    ))])
                     .await?;
                 self.writeln_title(
                     TitleFormat::action(effort.to_string())
                         .sub_title("is now the reasoning effort"),
+                )?;
+            }
+            ConfigSetField::ServiceTier { tier } => {
+                self.api
+                    .update_config(vec![ConfigOperation::SetServiceTier(Some(tier.clone()))])
+                    .await?;
+                self.writeln_title(
+                    TitleFormat::action(tier.to_string())
+                        .sub_title("is now the service tier"),
                 )?;
             }
         }
@@ -4602,6 +4686,13 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                     None => self.writeln("ReasoningEffort: Not set")?,
                 }
             }
+            ConfigGetField::ServiceTier => {
+                let tier = self.api.get_service_tier().await?;
+                match tier {
+                    Some(t) => self.writeln(t.to_string())?,
+                    None => self.writeln("ServiceTier: Not set")?,
+                }
+            }
         }
 
         Ok(())
@@ -4621,7 +4712,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .map(AgentId::new);
 
         // Make IO calls in parallel
-        let (model_id, conversation, reasoning_effort) = tokio::join!(
+        let (model_id, conversation, reasoning_effort, service_tier) = tokio::join!(
             self.get_agent_model(agent_id.clone()),
             async {
                 if let Some(cid) = cid {
@@ -4630,7 +4721,8 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
                     None
                 }
             },
-            async { self.api.get_reasoning_effort().await.ok().flatten() }
+            async { self.api.get_reasoning_effort().await.ok().flatten() },
+            async { self.api.get_service_tier().await.ok().flatten() }
         );
 
         // Calculate total cost including related conversations
@@ -4666,6 +4758,7 @@ impl<A: API + ConsoleWriter + 'static, F: Fn(ForgeConfig) -> A + Send + Sync> UI
             .token_count(conversation.and_then(|conversation| conversation.token_count()))
             .cost(cost)
             .reasoning_effort(reasoning_effort)
+            .service_tier(service_tier)
             .terminal_width(terminal_width)
             .use_nerd_font(use_nerd_font);
 

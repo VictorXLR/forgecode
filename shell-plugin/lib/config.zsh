@@ -26,6 +26,10 @@ typeset -h _FORGE_SESSION_PROVIDER
 # When non-empty, exported as FORGE_REASONING__EFFORT for every forge invocation.
 typeset -h _FORGE_SESSION_REASONING_EFFORT
 
+# Session-scoped service tier override (set via :service-tier / :st).
+# When non-empty, exported as FORGE_SERVICE_TIER for every forge invocation.
+typeset -h _FORGE_SESSION_SERVICE_TIER
+
 # Terminal context capture settings
 # Master switch for terminal context capture (preexec/precmd hooks)
 typeset -h _FORGE_TERM="${FORGE_TERM:-true}"

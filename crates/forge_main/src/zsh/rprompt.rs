@@ -13,7 +13,7 @@ use std::fmt::{self, Display};
 use convert_case::{Case, Casing};
 use derive_setters::Setters;
 use forge_config::ForgeConfig;
-use forge_domain::{AgentId, Effort, ModelId, TokenCount};
+use forge_domain::{AgentId, Effort, ModelId, ServiceTier, TokenCount};
 
 use super::style::{ZshColor, ZshStyle};
 use crate::utils::humanize_number;
@@ -38,6 +38,9 @@ pub struct ZshRPrompt {
     /// Currently configured reasoning effort level for the active model.
     /// Rendered to the right of the model when set.
     reasoning_effort: Option<Effort>,
+    /// Currently configured OpenAI service tier.
+    /// Rendered to the right of reasoning effort when set.
+    service_tier: Option<ServiceTier>,
     /// Terminal width in columns, used to pick between the compact
     /// three-letter label and the full-length uppercase label for
     /// reasoning effort. When `None`, the prompt falls back to the
@@ -72,6 +75,7 @@ impl Default for ZshRPrompt {
             token_count: None,
             cost: None,
             reasoning_effort: None,
+            service_tier: None,
             terminal_width: None,
             use_nerd_font: true,
             currency_symbol: "\u{f155}".to_string(),
@@ -182,6 +186,26 @@ impl Display for ZshRPrompt {
                 effort_label.zsh().fg(ZshColor::YELLOW)
             } else {
                 effort_label.zsh().fg(ZshColor::DIMMED)
+            };
+            write!(f, " {}", styled)?;
+        }
+
+        if let Some(ref tier) = self.service_tier {
+            let is_wide =
+                self.terminal_width.unwrap_or(WIDE_TERMINAL_THRESHOLD) >= WIDE_TERMINAL_THRESHOLD;
+            let tier_label = if is_wide {
+                tier.to_string().to_uppercase()
+            } else {
+                tier.to_string()
+                    .chars()
+                    .take(3)
+                    .collect::<String>()
+                    .to_uppercase()
+            };
+            let styled = if active {
+                tier_label.zsh().fg(ZshColor::CYAN)
+            } else {
+                tier_label.zsh().fg(ZshColor::DIMMED)
             };
             write!(f, " {}", styled)?;
         }

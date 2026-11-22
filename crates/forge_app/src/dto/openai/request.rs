@@ -183,10 +183,7 @@ pub struct Prediction {
     pub content: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct ProviderPreferences {
-    // Define fields as necessary
-}
+pub type ProviderPreferences = forge_domain::ProviderRouting;
 
 /// Z.ai-specific thinking type
 ///
@@ -263,6 +260,8 @@ pub struct Request {
     pub route: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderPreferences>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<forge_domain::ServiceTier>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -401,7 +400,8 @@ impl From<Context> for Request {
             transforms: Default::default(),
             models: Default::default(),
             route: Default::default(),
-            provider: Default::default(),
+            provider: context.provider_routing,
+            service_tier: context.service_tier,
             parallel_tool_calls: Some(true), /* Default to true, transformers will adjust based
                                               * on model capabilities */
             stream_options: Some(StreamOptions { include_usage: Some(true) }),

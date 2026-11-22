@@ -21,6 +21,7 @@ pub use http::*;
 pub use model::*;
 pub use percentage::*;
 pub use reader::*;
+pub use forge_domain::{MaxPrice, ProviderRouting, ServiceTier};
 pub use reasoning::*;
 pub use retry::*;
 pub use writer::*;

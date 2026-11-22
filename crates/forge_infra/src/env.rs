@@ -50,7 +50,7 @@ fn apply_config_op(fc: &mut ForgeConfig, op: ConfigOperation) {
             });
         }
         ConfigOperation::SetReasoningEffort(effort) => {
-            let config_effort = match effort {
+            let config_effort = effort.map(|e| match e {
                 forge_domain::Effort::None => forge_config::Effort::None,
                 forge_domain::Effort::Minimal => forge_config::Effort::Minimal,
                 forge_domain::Effort::Low => forge_config::Effort::Low,
@@ -58,11 +58,20 @@ fn apply_config_op(fc: &mut ForgeConfig, op: ConfigOperation) {
                 forge_domain::Effort::High => forge_config::Effort::High,
                 forge_domain::Effort::XHigh => forge_config::Effort::XHigh,
                 forge_domain::Effort::Max => forge_config::Effort::Max,
-            };
+            });
             let reasoning = fc
                 .reasoning
                 .get_or_insert_with(forge_config::ReasoningConfig::default);
-            reasoning.effort = Some(config_effort);
+            reasoning.effort = config_effort;
+        }
+        ConfigOperation::SetServiceTier(tier) => {
+            fc.service_tier = tier.map(|t| match t {
+                forge_domain::ServiceTier::Auto => forge_config::ServiceTier::Auto,
+                forge_domain::ServiceTier::Default => forge_config::ServiceTier::Default,
+                forge_domain::ServiceTier::Flex => forge_config::ServiceTier::Flex,
+                forge_domain::ServiceTier::Scale => forge_config::ServiceTier::Scale,
+                forge_domain::ServiceTier::Priority => forge_config::ServiceTier::Priority,
+            });
         }
     }
 }

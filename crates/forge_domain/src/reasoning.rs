@@ -1,5 +1,103 @@
+use std::collections::BTreeMap;
+
 use derive_setters::Setters;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use strum_macros::{Display as StrumDisplay, EnumString};
+
+/// OpenRouter Provider Routing configuration
+/// See: https://openrouter.ai/docs/features/provider-routing
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema, fake::Dummy)]
+pub struct ProviderRouting {
+    /// List of provider slugs to try in order (e.g. ["anthropic", "together"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<Vec<String>>,
+    /// Whether to allow backup providers when primary is unavailable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_fallbacks: Option<bool>,
+    /// Only use providers that support all parameters in the request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_parameters: Option<bool>,
+    /// Control whether to use providers that may store data ("allow" or "deny")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_collection: Option<String>,
+    /// Enforce Zero Data Retention endpoints
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zdr: Option<bool>,
+    /// Enforce distillable text endpoints
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enforce_distillable_text: Option<bool>,
+    /// List of provider slugs to allow for this request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub only: Option<Vec<String>>,
+    /// List of provider slugs to skip for this request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Vec<String>>,
+    /// List of quantization levels to filter by (e.g. ["int4", "int8", "fp8"])
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quantizations: Option<Vec<String>>,
+    /// Sort providers by "price", "throughput", or "latency"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
+    /// Maximum pricing you want to pay for this request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_price: Option<MaxPrice>,
+    /// Preferred minimum throughput (tokens/sec) thresholds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[dummy(default)]
+    pub preferred_min_throughput: Option<serde_json::Value>,
+    /// Preferred maximum latency (seconds) thresholds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[dummy(default)]
+    pub preferred_max_latency: Option<serde_json::Value>,
+    /// Additional provider routing fields for forward compatibility
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[dummy(default)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// The object specifying the maximum price you want to pay for this request.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema, fake::Dummy)]
+pub struct MaxPrice {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[dummy(default)]
+    pub prompt: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[dummy(default)]
+    pub completion: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[dummy(default)]
+    pub image: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[dummy(default)]
+    pub audio: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[dummy(default)]
+    pub request: Option<serde_json::Value>,
+}
+
+/// OpenAI / Responses API Service Tier configuration
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    fake::Dummy,
+    StrumDisplay,
+    EnumString,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
+pub enum ServiceTier {
+    Auto,
+    Default,
+    Flex,
+    Priority,
+    Scale,
+}
 
 /// Represents a reasoning detail that may be included in the response
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default, Setters)]

@@ -132,6 +132,10 @@ impl ForgeCommandManager {
                 | "re"
                 | "config-reasoning-effort"
                 | "cre"
+                | "service-tier"
+                | "st"
+                | "config-service-tier"
+                | "cst"
                 | "config-commit-model"
                 | "ccm"
                 | "config-suggest-model"
@@ -441,6 +445,19 @@ pub enum AppCommand {
     #[command(name = "config-reasoning-effort", alias = "cre")]
     ConfigReasoningEffort,
 
+    /// Set the OpenAI service tier for the current session.
+    /// This can be triggered with the '/service-tier' command (alias: st).
+    #[strum(props(usage = "Set OpenAI service tier for current session [alias: st]"))]
+    #[command(name = "service-tier", alias = "st")]
+    ServiceTier,
+
+    /// Set the OpenAI service tier in global config.
+    /// This can be triggered with the '/config-service-tier' command
+    /// (alias: cst).
+    #[strum(props(usage = "Set OpenAI service tier in global config [alias: cst]"))]
+    #[command(name = "config-service-tier", alias = "cst")]
+    ConfigServiceTier,
+
     /// Set the model used for commit message generation.
     /// This can be triggered with the '/config-commit-model' command (alias:
     /// ccm).
@@ -740,6 +757,8 @@ impl AppCommand {
             AppCommand::ConfigReload => "config-reload",
             AppCommand::ReasoningEffort => "reasoning-effort",
             AppCommand::ConfigReasoningEffort => "config-reasoning-effort",
+            AppCommand::ServiceTier => "service-tier",
+            AppCommand::ConfigServiceTier => "config-service-tier",
             AppCommand::ConfigCommitModel => "config-commit-model",
             AppCommand::ConfigSuggestModel => "config-suggest-model",
             AppCommand::ConfigEdit => "config-edit",

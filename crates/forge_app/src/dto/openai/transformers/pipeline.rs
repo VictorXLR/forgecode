@@ -164,12 +164,12 @@ fn is_xiaomi_mimo_provider(provider: &Provider<Url>) -> bool {
     provider.id == ProviderId::XIAOMI_MIMO
 }
 
-/// Checks if the request model is a gemini-3 model (which supports thought
-/// signatures)
+/// Checks if the request model is a gemini-3 or gemini-4 model (which supports
+/// thought signatures)
 fn is_gemini3_model(req: &Request) -> bool {
     req.model
         .as_ref()
-        .map(|m| m.as_str().contains("gemini-3"))
+        .map(|m| m.as_str().contains("gemini-3") || m.as_str().contains("gemini-4"))
         .unwrap_or(false)
 }
 

@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use forge_domain::{AgentId, ConversationId, Effort, ModelId, ProviderId};
+use forge_domain::{AgentId, ConversationId, Effort, ModelId, ProviderId, ServiceTier};
 
 #[derive(Parser)]
 #[command(version = env!("CARGO_PKG_VERSION"))]
@@ -214,6 +214,16 @@ pub enum SelectCommand {
     /// Prints the selected effort level (none, minimal, low, medium, high,
     /// xhigh, max) on stdout. Prints nothing if the user cancels.
     ReasoningEffort {
+        /// Initial query text pre-filled in the search box.
+        #[arg(long, short = 'q')]
+        query: Option<String>,
+    },
+
+    /// Select an OpenAI service tier interactively.
+    ///
+    /// Prints the selected service tier (auto, default, flex, scale, priority)
+    /// on stdout. Prints nothing if the user cancels.
+    ServiceTier {
         /// Initial query text pre-filled in the search box.
         #[arg(long, short = 'q')]
         query: Option<String>,
@@ -691,6 +701,11 @@ pub enum ConfigSetField {
         /// Effort level: none, minimal, low, medium, high, xhigh, max.
         effort: Effort,
     },
+    /// Set the OpenAI service tier applied to all agents.
+    ServiceTier {
+        /// Service tier: auto, default, flex, scale, priority.
+        tier: ServiceTier,
+    },
 }
 
 /// Type-safe subcommands for `forge config get`.
@@ -706,6 +721,8 @@ pub enum ConfigGetField {
     Suggest,
     /// Get the reasoning effort level.
     ReasoningEffort,
+    /// Get the OpenAI service tier.
+    ServiceTier,
 }
 
 /// Command group for conversation management.

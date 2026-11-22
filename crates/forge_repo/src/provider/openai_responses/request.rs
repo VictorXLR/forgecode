@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use async_openai::types::responses as oai;
 use forge_app::domain::{Context as ChatContext, ContextMessage, MessagePhase, Role, ToolChoice};
 use forge_app::utils::enforce_strict_schema;
-use forge_domain::{Effort, ReasoningConfig, ReasoningFull};
+use forge_domain::{Effort, ReasoningConfig, ReasoningFull, ServiceTier};
 
 use crate::provider::FromDomain;
 
@@ -374,6 +374,18 @@ impl FromDomain<ChatContext> for oai::CreateResponse {
         if let Some(reasoning) = context.reasoning {
             let reasoning_config = oai::Reasoning::from_domain(reasoning)?;
             builder.reasoning(reasoning_config);
+        }
+
+        // Apply service_tier configuration if provided
+        if let Some(service_tier) = context.service_tier {
+            let oai_tier = match service_tier {
+                ServiceTier::Auto => oai::ServiceTier::Auto,
+                ServiceTier::Default => oai::ServiceTier::Default,
+                ServiceTier::Flex => oai::ServiceTier::Flex,
+                ServiceTier::Priority => oai::ServiceTier::Priority,
+                ServiceTier::Scale => oai::ServiceTier::Scale,
+            };
+            builder.service_tier(oai_tier);
         }
 
         if let Some(prompt_cache_key) = prompt_cache_key {

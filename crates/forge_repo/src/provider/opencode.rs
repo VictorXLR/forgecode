@@ -47,7 +47,7 @@ impl<F: HttpInfra + EnvironmentInfra<Config = forge_config::ForgeConfig> + Sync>
 
         if model_str.starts_with("claude-") {
             OpenCodeBackend::Anthropic
-        } else if model_str.starts_with("gpt-5") {
+        } else if model_str.starts_with("gpt-5") || model_str.starts_with("gpt-6") {
             OpenCodeBackend::OpenAIResponses
         } else if model_str.starts_with("gemini-") {
             OpenCodeBackend::Google

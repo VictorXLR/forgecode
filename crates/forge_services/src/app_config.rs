@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use forge_app::{AppConfigService, EnvironmentInfra};
-use forge_domain::{ConfigOperation, Effort, ModelConfig, ModelId, ProviderId, ProviderRepository};
+use forge_domain::{
+    ConfigOperation, Effort, ModelConfig, ModelId, ProviderId, ProviderRepository, ServiceTier,
+};
 use tracing::debug;
 
 /// Service for managing user preferences for default providers and models.
@@ -63,6 +65,17 @@ impl<F: ProviderRepository + EnvironmentInfra<Config = forge_config::ForgeConfig
                 forge_config::Effort::XHigh => Effort::XHigh,
                 forge_config::Effort::Max => Effort::Max,
             }))
+    }
+
+    async fn get_service_tier(&self) -> anyhow::Result<Option<ServiceTier>> {
+        let config = self.infra.get_config()?;
+        Ok(config.service_tier.map(|t| match t {
+            forge_config::ServiceTier::Auto => ServiceTier::Auto,
+            forge_config::ServiceTier::Default => ServiceTier::Default,
+            forge_config::ServiceTier::Flex => ServiceTier::Flex,
+            forge_config::ServiceTier::Scale => ServiceTier::Scale,
+            forge_config::ServiceTier::Priority => ServiceTier::Priority,
+        }))
     }
 
     async fn update_config(&self, ops: Vec<ConfigOperation>) -> anyhow::Result<()> {
@@ -199,7 +212,8 @@ mod tests {
                                 mc.model.to_string(),
                             ));
                         }
-                        ConfigOperation::SetReasoningEffort(_) => {
+                        ConfigOperation::SetReasoningEffort(_)
+                        | ConfigOperation::SetServiceTier(_) => {
                             // No-op in tests
                         }
                     }

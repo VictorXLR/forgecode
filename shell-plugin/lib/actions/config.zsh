@@ -131,7 +131,7 @@ function _forge_action_session_model() {
 function _forge_action_config_reload() {
     echo
 
-    if [[ -z "$_FORGE_SESSION_MODEL" && -z "$_FORGE_SESSION_PROVIDER" && -z "$_FORGE_SESSION_REASONING_EFFORT" ]]; then
+    if [[ -z "$_FORGE_SESSION_MODEL" && -z "$_FORGE_SESSION_PROVIDER" && -z "$_FORGE_SESSION_REASONING_EFFORT" && -z "$_FORGE_SESSION_SERVICE_TIER" ]]; then
         _forge_log info "No session overrides active (already using global config)"
         return 0
     fi
@@ -139,6 +139,7 @@ function _forge_action_config_reload() {
     _FORGE_SESSION_MODEL=""
     _FORGE_SESSION_PROVIDER=""
     _FORGE_SESSION_REASONING_EFFORT=""
+    _FORGE_SESSION_SERVICE_TIER=""
 
     _forge_log success "Session overrides cleared — using global config"
 }
@@ -172,6 +173,38 @@ function _forge_action_config_reasoning_effort() {
 
     if [[ -n "$selected" ]]; then
         _forge_exec config set reasoning-effort "$selected"
+    fi
+}
+
+# Action handler: Select service tier for the current session only.
+# Sets _FORGE_SESSION_SERVICE_TIER in the shell environment so that
+# every subsequent forge invocation uses the selected value via the
+# FORGE_SERVICE_TIER env var without modifying the permanent config.
+function _forge_action_service_tier() {
+    local input_text="$1"
+    echo
+
+    local selected
+    selected=$(_forge_select_with_query "$input_text" service-tier)
+
+    if [[ -n "$selected" ]]; then
+        _FORGE_SESSION_SERVICE_TIER="$selected"
+        _forge_log success "Session service tier set to \033[1m${selected}\033[0m"
+    fi
+}
+
+# Action handler: Set service tier in global config.
+# Calls `forge config set service-tier <tier>` on selection,
+# writing the chosen service tier permanently to ~/.forge/.forge.toml.
+function _forge_action_config_service_tier() {
+    local input_text="$1"
+    echo
+
+    local selected
+    selected=$(_forge_select_with_query "$input_text" service-tier)
+
+    if [[ -n "$selected" ]]; then
+        _forge_exec config set service-tier "$selected"
     fi
 }
 

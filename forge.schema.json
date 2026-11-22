@@ -233,6 +233,17 @@
       "default": 0,
       "minimum": 0
     },
+    "provider_routing": {
+      "description": "Default OpenRouter provider routing preferences applied to all agents.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProviderRouting"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "providers": {
       "description": "Additional provider definitions merged with the built-in provider list.\n\nEntries with an `id` matching a built-in provider override its fields;\nentries with a new `id` are appended and become available for model\nselection.",
       "type": "array",
@@ -278,6 +289,17 @@
       "format": "uint",
       "default": 0,
       "minimum": 0
+    },
+    "service_tier": {
+      "description": "Default OpenAI / Responses service tier configuration (`auto`,\n`default`, `flex`, `priority`, `scale`).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ServiceTier"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "services_url": {
       "description": "Base URL of the Forge services API used for semantic search and\nindexing.",
@@ -640,6 +662,17 @@
         }
       ]
     },
+    "MaxPrice": {
+      "description": "The object specifying the maximum price you want to pay for this request.",
+      "type": "object",
+      "properties": {
+        "audio": true,
+        "completion": true,
+        "image": true,
+        "prompt": true,
+        "request": true
+      }
+    },
     "Model": {
       "type": "object",
       "properties": {
@@ -837,6 +870,112 @@
         "OpenCode"
       ]
     },
+    "ProviderRouting": {
+      "description": "OpenRouter Provider Routing configuration\nSee: https://openrouter.ai/docs/features/provider-routing",
+      "type": "object",
+      "properties": {
+        "allow_fallbacks": {
+          "description": "Whether to allow backup providers when primary is unavailable",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "data_collection": {
+          "description": "Control whether to use providers that may store data (\"allow\" or \"deny\")",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enforce_distillable_text": {
+          "description": "Enforce distillable text endpoints",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ignore": {
+          "description": "List of provider slugs to skip for this request",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_price": {
+          "description": "Maximum pricing you want to pay for this request",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MaxPrice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "only": {
+          "description": "List of provider slugs to allow for this request",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "order": {
+          "description": "List of provider slugs to try in order (e.g. [\"anthropic\", \"together\"])",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "preferred_max_latency": {
+          "description": "Preferred maximum latency (seconds) thresholds"
+        },
+        "preferred_min_throughput": {
+          "description": "Preferred minimum throughput (tokens/sec) thresholds"
+        },
+        "quantizations": {
+          "description": "List of quantization levels to filter by (e.g. [\"int4\", \"int8\", \"fp8\"])",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "require_parameters": {
+          "description": "Only use providers that support all parameters in the request",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sort": {
+          "description": "Sort providers by \"price\", \"throughput\", or \"latency\"",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "zdr": {
+          "description": "Enforce Zero Data Retention endpoints",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
     "ProviderTypeEntry": {
       "description": "Category of a provider.",
       "oneOf": [
@@ -975,6 +1114,17 @@
         "max_attempts",
         "status_codes",
         "suppress_errors"
+      ]
+    },
+    "ServiceTier": {
+      "description": "OpenAI / Responses API Service Tier configuration",
+      "type": "string",
+      "enum": [
+        "auto",
+        "default",
+        "flex",
+        "priority",
+        "scale"
       ]
     },
     "TlsBackend": {

@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::reader::ConfigReader;
 use crate::writer::ConfigWriter;
 use crate::{
-    AutoDumpFormat, Compact, Decimal, HttpConfig, ModelConfig, ReasoningConfig, RetryConfig, Update,
+    AutoDumpFormat, Compact, Decimal, HttpConfig, ModelConfig, ProviderRouting, ReasoningConfig,
+    RetryConfig, ServiceTier, Update,
 };
 
 /// Wire protocol a provider uses for chat completions.
@@ -277,6 +278,15 @@ pub struct ForgeConfig {
     /// token budget, and visibility of the model's thinking process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningConfig>,
+
+    /// Default OpenRouter provider routing preferences applied to all agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_routing: Option<ProviderRouting>,
+
+    /// Default OpenAI / Responses service tier configuration (`auto`,
+    /// `default`, `flex`, `priority`, `scale`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
 
     /// Additional provider definitions merged with the built-in provider list.
     ///

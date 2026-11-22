@@ -1,7 +1,7 @@
 use derive_setters::Setters;
 use forge_domain::{
-    Agent, AgentId, Compact, EventContext, MaxTokens, ModelId, ProviderId, ReasoningConfig,
-    SystemContext, Temperature, Template, ToolName, TopK, TopP,
+    Agent, AgentId, Compact, EventContext, MaxTokens, ModelId, ProviderId, ProviderRouting,
+    ReasoningConfig, ServiceTier, SystemContext, Temperature, Template, ToolName, TopK, TopP,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -115,12 +115,18 @@ pub(crate) struct AgentDefinition {
 
     /// Reasoning configuration for the agent.
     /// Controls the reasoning capabilities of the agent
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningConfig>,
 
+    /// OpenRouter provider routing configuration for the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_routing: Option<ProviderRouting>,
+
+    /// OpenAI / Responses service tier configuration for the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
+
     /// Maximum number of times a tool can fail before sending the response back
-    /// to the LLM forces the completion.
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tool_failure_per_turn: Option<usize>,
@@ -156,6 +162,8 @@ impl AgentDefinition {
             top_k: self.top_k,
             tools: self.tools,
             reasoning: self.reasoning,
+            provider_routing: self.provider_routing,
+            service_tier: self.service_tier,
             compact: self.compact.unwrap_or_default(),
             max_turns: self.max_turns,
             custom_rules: self.custom_rules,

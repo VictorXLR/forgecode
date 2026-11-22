@@ -197,6 +197,9 @@ pub trait AppConfigService: Send + Sync {
     /// Gets the current reasoning effort setting.
     async fn get_reasoning_effort(&self) -> anyhow::Result<Option<forge_domain::Effort>>;
 
+    /// Gets the current service tier setting.
+    async fn get_service_tier(&self) -> anyhow::Result<Option<forge_domain::ServiceTier>>;
+
     /// Applies one or more configuration mutations atomically.
     ///
     /// Each operation in `ops` is applied in order, and the result is
@@ -977,6 +980,10 @@ impl<I: Services> AppConfigService for I {
 
     async fn get_reasoning_effort(&self) -> anyhow::Result<Option<forge_domain::Effort>> {
         self.config_service().get_reasoning_effort().await
+    }
+
+    async fn get_service_tier(&self) -> anyhow::Result<Option<forge_domain::ServiceTier>> {
+        self.config_service().get_service_tier().await
     }
 
     async fn update_config(&self, ops: Vec<forge_domain::ConfigOperation>) -> anyhow::Result<()> {

@@ -182,6 +182,18 @@ impl AgentExt for Agent {
             agent.reasoning = Some(merged);
         }
 
+        if agent.provider_routing.is_none()
+            && let Some(ref provider_routing) = config.provider_routing
+        {
+            agent.provider_routing = Some(provider_routing.clone());
+        }
+
+        if agent.service_tier.is_none()
+            && let Some(ref service_tier) = config.service_tier
+        {
+            agent.service_tier = Some(service_tier.clone());
+        }
+
         agent
     }
 }

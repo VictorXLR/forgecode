@@ -1861,6 +1861,8 @@ mod tests {
             top_k: None,
             max_tokens: None,
             reasoning: None,
+            provider_routing: None,
+            service_tier: None,
             stream: None,
             response_format: None,
         };
@@ -1891,6 +1893,8 @@ mod tests {
             top_k: None,
             max_tokens: None,
             reasoning: None,
+            provider_routing: None,
+            service_tier: None,
             stream: None,
             response_format: None,
         };
@@ -1922,6 +1926,8 @@ mod tests {
                 exclude: None,
                 enabled: Some(true),
             }),
+            provider_routing: None,
+            service_tier: None,
             stream: None,
             response_format: None,
         };
@@ -1956,6 +1962,8 @@ mod tests {
                 exclude: None,
                 enabled: Some(true),
             }),
+            provider_routing: None,
+            service_tier: None,
             stream: None,
             response_format: None,
         };
@@ -1990,6 +1998,8 @@ mod tests {
                 exclude: None,
                 enabled: Some(true),
             }),
+            provider_routing: None,
+            service_tier: None,
             stream: None,
             response_format: None,
         };
@@ -2046,6 +2056,8 @@ mod tests {
                 exclude: Some(true),
                 enabled: Some(true),
             }),
+            provider_routing: None,
+            service_tier: None,
             stream: None,
             response_format: None,
         };
@@ -2089,6 +2101,8 @@ mod tests {
                 exclude: None,
                 enabled: Some(true),
             }),
+            provider_routing: None,
+            service_tier: None,
             stream: None,
             response_format: None,
         };
@@ -2124,6 +2138,8 @@ mod tests {
                 exclude: None,
                 enabled: Some(true),
             }),
+            provider_routing: None,
+            service_tier: None,
             stream: None,
             response_format: None,
         };

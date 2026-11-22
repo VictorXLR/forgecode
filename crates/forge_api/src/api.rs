@@ -172,6 +172,9 @@ pub trait API: Sync + Send {
     /// Gets the current reasoning effort setting.
     async fn get_reasoning_effort(&self) -> anyhow::Result<Option<Effort>>;
 
+    /// Gets the current service tier setting.
+    async fn get_service_tier(&self) -> anyhow::Result<Option<ServiceTier>>;
+
     /// Refresh MCP caches by fetching fresh data
     async fn reload_mcp(&self) -> Result<()>;
 

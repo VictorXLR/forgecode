@@ -187,6 +187,12 @@ function forge-accept-line() {
         config-reasoning-effort|cre)
             _forge_action_config_reasoning_effort "$input_text"
         ;;
+        service-tier|st)
+            _forge_action_service_tier "$input_text"
+        ;;
+        config-service-tier|cst)
+            _forge_action_config_service_tier "$input_text"
+        ;;
         config-commit-model|ccm)
             _forge_action_commit_model "$input_text"
         ;;

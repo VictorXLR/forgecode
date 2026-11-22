@@ -319,6 +319,10 @@ mod tests {
             Ok(None)
         }
 
+        async fn get_service_tier(&self) -> Result<Option<forge_domain::ServiceTier>> {
+            Ok(None)
+        }
+
         async fn update_config(&self, _ops: Vec<forge_domain::ConfigOperation>) -> Result<()> {
             Ok(())
         }

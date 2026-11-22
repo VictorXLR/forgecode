@@ -30,6 +30,12 @@ impl ApplyTunableParameters {
         if let Some(ref reasoning) = self.agent.reasoning {
             ctx = ctx.reasoning(reasoning.clone());
         }
+        if let Some(ref provider_routing) = self.agent.provider_routing {
+            ctx = ctx.provider_routing(provider_routing.clone());
+        }
+        if let Some(ref service_tier) = self.agent.service_tier {
+            ctx = ctx.service_tier(service_tier.clone());
+        }
 
         conversation.context(ctx.tools(self.tool_definitions))
     }

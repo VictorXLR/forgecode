@@ -421,6 +421,10 @@ pub struct Context {
     pub top_k: Option<TopK>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<crate::ReasoningConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_routing: Option<crate::ProviderRouting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<crate::ServiceTier>,
     /// Controls whether responses should be streamed. When `true`, responses
     /// are delivered incrementally as they're generated. When `false`, the
     /// complete response is returned at once. Defaults to `true` if not

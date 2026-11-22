@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use convert_case::{Case, Casing};
 use derive_setters::Setters;
-use forge_api::{AgentId, Effort, ModelId, Usage};
+use forge_api::{AgentId, Effort, ModelId, ServiceTier, Usage};
 use nu_ansi_term::{Color, Style};
 
 use crate::display_constants::markers;
@@ -37,6 +37,9 @@ pub struct ForgePrompt {
     /// rendered to the right of the model when set. `Effort::None` is
     /// suppressed (see [`ForgePrompt::render_prompt_right`]).
     pub reasoning_effort: Option<Effort>,
+    /// Currently configured OpenAI service tier, rendered to the right of
+    /// reasoning effort when set.
+    pub service_tier: Option<ServiceTier>,
     pub git_branch: Option<String>,
 }
 
@@ -51,6 +54,7 @@ impl ForgePrompt {
             agent_id,
             model: None,
             reasoning_effort: None,
+            service_tier: None,
             git_branch,
         }
     }
@@ -199,6 +203,16 @@ impl ForgePrompt {
             write!(result, " {}", Style::new().fg(color).paint(&effort_label)).unwrap();
         }
 
+        if let Some(ref tier) = self.service_tier {
+            let tier_label = service_tier_label(tier, term_width());
+            let color = if active {
+                Color::Cyan
+            } else {
+                Color::DarkGray
+            };
+            write!(result, " {}", Style::new().fg(color).paint(&tier_label)).unwrap();
+        }
+
         Cow::Owned(result)
     }
 
@@ -235,6 +249,17 @@ fn effort_label(effort: &Effort, width: usize) -> String {
     }
 }
 
+/// Formats a [`ServiceTier`] as its uppercase label, collapsing to the first three
+/// characters on narrow terminals (< [`WIDE_TERMINAL_THRESHOLD`] columns).
+fn service_tier_label(tier: &ServiceTier, width: usize) -> String {
+    let full = tier.to_string().to_uppercase();
+    if width >= WIDE_TERMINAL_THRESHOLD {
+        full
+    } else {
+        full.chars().take(3).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use nu_ansi_term::Style;
@@ -250,6 +275,7 @@ mod tests {
                 agent_id: AgentId::default(),
                 model: None,
                 reasoning_effort: None,
+                service_tier: None,
                 git_branch: None,
             }
         }

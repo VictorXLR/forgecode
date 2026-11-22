@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use strum_macros::{Display as StrumDisplay, EnumString};
 
 use crate::{
-    Compact, Error, EventContext, MaxTokens, Model, ModelId, ProviderId, Result, SystemContext,
-    Temperature, Template, ToolDefinition, ToolName, TopK, TopP,
+    Compact, Error, EventContext, MaxTokens, Model, ModelId, ProviderId, ProviderRouting, Result,
+    ServiceTier, SystemContext, Temperature, Template, ToolDefinition, ToolName, TopK, TopP,
 };
 
 // Unique identifier for an agent
@@ -161,6 +161,12 @@ pub struct Agent {
     /// Reasoning configuration for the agent.
     pub reasoning: Option<ReasoningConfig>,
 
+    /// OpenRouter provider routing configuration for the agent.
+    pub provider_routing: Option<ProviderRouting>,
+
+    /// OpenAI / Responses service tier configuration for the agent.
+    pub service_tier: Option<ServiceTier>,
+
     /// Maximum number of times a tool can fail before sending the response back
     pub max_tool_failure_per_turn: Option<usize>,
 
@@ -204,6 +210,8 @@ impl Agent {
             top_k: Default::default(),
             max_tokens: Default::default(),
             reasoning: Default::default(),
+            provider_routing: Default::default(),
+            service_tier: Default::default(),
             max_tool_failure_per_turn: Default::default(),
             max_requests_per_turn: Default::default(),
             path: Default::default(),

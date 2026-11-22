@@ -5,7 +5,7 @@ use derive_more::Display;
 use derive_setters::Setters;
 use serde::{Deserialize, Serialize};
 
-use crate::{Effort, ModelConfig};
+use crate::{Effort, ModelConfig, ServiceTier};
 
 /// All discrete mutations that can be applied to the application configuration.
 ///
@@ -27,8 +27,10 @@ pub enum ConfigOperation {
     SetCommitConfig(Option<ModelConfig>),
     /// Set the shell-command suggestion configuration.
     SetSuggestConfig(ModelConfig),
-    /// Set the reasoning effort level for all agents.
-    SetReasoningEffort(Effort),
+    /// Set the reasoning effort level for all agents (`None` clears it).
+    SetReasoningEffort(Option<Effort>),
+    /// Set the service tier for all agents (`None` clears it).
+    SetServiceTier(Option<ServiceTier>),
 }
 
 const VERSION: &str = match option_env!("APP_VERSION") {
